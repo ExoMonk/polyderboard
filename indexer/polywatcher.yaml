@@ -1,6 +1,6 @@
 name: PolyDearboard
 description: On-chain Polymarket trader leaderboard
-project_type: rust
+project_type: no-code
 timestamps: true
 
 networks:
@@ -9,9 +9,10 @@ networks:
     rpc: ${POLYGON_RPC_URL}
     compute_units_per_second: 30
     max_block_range: 2000
+    block_poll_frequency: "/3"
 
 storage:
-  postgres:
+  clickhouse:
     enabled: true
 
 contracts:
