@@ -6,11 +6,13 @@ services:
       CLICKHOUSE_USER: default
       CLICKHOUSE_PASSWORD: ""
     ports:
-      - "8123:8123"    # HTTP
+      - "8123:8123"    # HTTP + Play UI (/play)
       - "9000:9000"    # Native
+      - "9363:9363"    # Prometheus metrics (/metrics)
     volumes:
       - chdata:/var/lib/clickhouse
       - ../indexer/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ../indexer/clickhouse/prometheus.xml:/etc/clickhouse-server/config.d/prometheus.xml
     healthcheck:
       test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
       interval: 5s
@@ -18,17 +20,22 @@ services:
 
   indexer:
     image: ghcr.io/joshstevens19/rindexer:latest
+    platform: linux/amd64
     depends_on:
       clickhouse:
         condition: service_healthy
     environment:
       CLICKHOUSE_URL: http://clickhouse:8123
-      DATABASE_URL: clickhouse://default:@clickhouse:9000/poly_dearboard
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DB: poly_dearboard
       POLYGON_RPC_URL: ${POLYGON_RPC_URL:-https://polygon-rpc.com}
+    ports:
+      - "8080:8080"    # rindexer health + metrics
     volumes:
       - ../indexer/polywatcher.yaml:/app/rindexer.yaml
       - ../indexer/abi:/app/abi
-    command: ["start", "all", "--path", "/app/rindexer.yaml"]
+    command: ["start", "--path", "/app", "all"]
 
   api:
     build:

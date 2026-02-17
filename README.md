@@ -2,6 +2,22 @@
 
 Polymarket's official leaderboard API data isn't 100% reliable. We're building our own leaderboard by indexing on-chain trade events directly from the CTF Exchange and NegRisk Exchange contracts on Polygon, giving us ground-truth data for trader PnL, volume, and rankings.
 
+## Run
+
+| Target | What it does |
+| --- | --- |
+| `make indexer` | Starts ClickHouse (background) + rindexer (foreground with logs) |
+| `make serve` | Starts the Axum API on port 3001 |
+| `make query` | Runs E2E leaderboard queries (PnL, volume, trade count, trader detail) |
+| `make clean` | Tears down Docker containers + volumes |
+
+**`scripts/indexer.sh`** --- Starts ClickHouse, waits for health, prints an endpoint table:
+
+-   ClickHouse Play UI: `http://localhost:8123/play`
+-   ClickHouse Prometheus: `http://localhost:9363/metrics`
+-   rindexer Health: `http://localhost:8080/health`
+-   rindexer Metrics: `http://localhost:8080/metrics`
+
 ## Stack
 
 - **Indexer**: custom rindexer
@@ -22,9 +38,6 @@ ClickHouse (normalized trades, leaderboard aggregates)
     ↓ SQL queries
 Axum REST API → Frontend
 ```
-
-
-
 
 **How Close to Real-Time?**
 -----------------------
