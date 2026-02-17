@@ -5,7 +5,7 @@ import { fetchTrader, fetchTraderTrades } from "../api";
 import Spinner from "../components/Spinner";
 import Pagination from "../components/Pagination";
 import TradeActivity from "../charts/TradeActivity";
-import { formatUsd, formatNumber, formatDate, formatTimestamp, shortenAddress, polygonscanAddress, polygonscanTx } from "../lib/format";
+import { formatUsd, formatNumber, formatDate, formatTimestamp, shortenAddress, polygonscanAddress, polygonscanTx, polymarketAddress } from "../lib/format";
 
 const PAGE_SIZE = 50;
 
@@ -28,23 +28,23 @@ export default function TraderDetail() {
   });
 
   if (loadingTrader) return <Spinner />;
-  if (traderError) return <div className="text-red-400 text-center py-10">Trader not found</div>;
+  if (traderError) return <div className="text-[var(--neon-red)] text-center py-10">Trader not found</div>;
   if (!trader) return null;
 
   const pnl = parseFloat(trader.realized_pnl);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       {/* Header */}
       <div>
-        <Link to="/" className="text-sm text-gray-500 hover:text-gray-300 transition-colors">
+        <Link to="/" className="text-sm text-[var(--text-secondary)] hover:text-[var(--accent-cyan)] transition-colors duration-200">
           ← Back to Leaderboard
         </Link>
-        <div className="flex items-center gap-3 mt-2">
-          <h1 className="text-xl font-bold font-mono">{shortenAddress(address!)}</h1>
+        <div className="flex items-center gap-3 mt-3">
+          <h1 className="text-2xl font-black font-mono gradient-text">{shortenAddress(address!)}</h1>
           <button
             onClick={() => navigator.clipboard.writeText(address!)}
-            className="text-gray-500 hover:text-gray-300 transition-colors"
+            className="text-[var(--text-secondary)] hover:text-[var(--accent-cyan)] transition-colors duration-200"
             title="Copy address"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -55,16 +55,24 @@ export default function TraderDetail() {
             href={polygonscanAddress(address!)}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-gray-500 hover:text-gray-300 transition-colors text-sm"
+            className="text-[var(--text-secondary)] hover:text-[var(--accent-cyan)] transition-colors duration-200 text-sm"
           >
             Polygonscan ↗
+          </a>
+          <a
+            href={polymarketAddress(address!)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[var(--text-secondary)] hover:text-[var(--accent-cyan)] transition-colors duration-200 text-sm"
+          >
+            Polymarket ↗
           </a>
         </div>
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-        <StatCard label="Realized PnL" value={formatUsd(trader.realized_pnl)} color={pnl >= 0 ? "text-emerald-400" : "text-red-400"} />
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+        <StatCard label="Realized PnL" value={formatUsd(trader.realized_pnl)} glow={pnl >= 0 ? "green" : "red"} />
         <StatCard label="Total Volume" value={formatUsd(trader.total_volume)} />
         <StatCard label="Trades" value={formatNumber(trader.trade_count)} />
         <StatCard label="Markets" value={formatNumber(trader.markets_traded)} />
@@ -77,15 +85,17 @@ export default function TraderDetail() {
 
       {/* Trades Table */}
       <div>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold">Trade History</h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-bold gradient-text">Trade History</h2>
           <div className="flex gap-1">
             {["", "buy", "sell"].map((s) => (
               <button
                 key={s}
                 onClick={() => { setSideFilter(s); setOffset(0); }}
-                className={`px-3 py-1 text-xs rounded transition-colors ${
-                  sideFilter === s ? "bg-gray-700 text-white" : "bg-gray-800/50 text-gray-400 hover:text-gray-200"
+                className={`px-4 py-1.5 text-xs rounded-full font-medium transition-all duration-200 ${
+                  sideFilter === s
+                    ? "bg-[var(--accent-cyan)]/10 text-[var(--accent-cyan)] border border-[var(--accent-cyan)]/30 shadow-[0_0_8px_rgba(34,211,238,0.15)]"
+                    : "text-[var(--text-secondary)] border border-transparent hover:text-[var(--text-primary)] hover:border-[var(--border-glow)]"
                 }`}
               >
                 {s === "" ? "All" : s === "buy" ? "Buy" : "Sell"}
@@ -98,66 +108,82 @@ export default function TraderDetail() {
           <Spinner />
         ) : tradesData && tradesData.trades.length > 0 ? (
           <>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-gray-800 text-gray-400 text-xs uppercase tracking-wider">
-                    <th className="px-3 py-2 text-left">Time</th>
-                    <th className="px-3 py-2 text-right">Block</th>
-                    <th className="px-3 py-2 text-center">Side</th>
-                    <th className="px-3 py-2 text-right">Amount</th>
-                    <th className="px-3 py-2 text-right">Price</th>
-                    <th className="px-3 py-2 text-right">USDC</th>
-                    <th className="px-3 py-2 text-right">Fee</th>
-                    <th className="px-3 py-2 text-right">Tx</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {tradesData.trades.map((t, i) => (
-                    <tr key={`${t.tx_hash}-${i}`} className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors">
-                      <td className="px-3 py-2 text-gray-400 whitespace-nowrap">{formatTimestamp(t.block_timestamp)}</td>
-                      <td className="px-3 py-2 text-right font-mono text-gray-500 text-xs">{formatNumber(t.block_number)}</td>
-                      <td className="px-3 py-2 text-center">
-                        <span className={`text-xs font-medium px-2 py-0.5 rounded ${
-                          t.side === "buy" ? "bg-emerald-400/10 text-emerald-400" : "bg-red-400/10 text-red-400"
-                        }`}>
-                          {t.side.toUpperCase()}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono text-gray-300">{formatNumber(t.amount)}</td>
-                      <td className="px-3 py-2 text-right font-mono text-gray-300">{formatUsd(t.price)}</td>
-                      <td className="px-3 py-2 text-right font-mono text-gray-300">{formatUsd(t.usdc_amount)}</td>
-                      <td className="px-3 py-2 text-right font-mono text-gray-500">{formatUsd(t.fee)}</td>
-                      <td className="px-3 py-2 text-right">
-                        <a
-                          href={polygonscanTx(t.tx_hash)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-blue-400/60 hover:text-blue-400 font-mono text-xs transition-colors"
-                        >
-                          {shortenAddress(t.tx_hash)}
-                        </a>
-                      </td>
+            <div className="glass overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-[var(--border-glow)] text-[var(--text-secondary)] text-xs uppercase tracking-widest">
+                      <th className="px-4 py-3 text-left">Time</th>
+                      <th className="px-4 py-3 text-right">Block</th>
+                      <th className="px-4 py-3 text-center">Side</th>
+                      <th className="px-4 py-3 text-right">Amount</th>
+                      <th className="px-4 py-3 text-right">Price</th>
+                      <th className="px-4 py-3 text-right">USDC</th>
+                      <th className="px-4 py-3 text-right">Fee</th>
+                      <th className="px-4 py-3 text-right">Tx</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {tradesData.trades.map((t, i) => (
+                      <tr key={`${t.tx_hash}-${i}`} className="border-b border-[var(--border-subtle)] row-glow">
+                        <td className="px-4 py-3 text-[var(--text-secondary)] whitespace-nowrap">{formatTimestamp(t.block_timestamp)}</td>
+                        <td className="px-4 py-3 text-right font-mono text-[var(--text-secondary)] text-xs">{formatNumber(t.block_number)}</td>
+                        <td className="px-4 py-3 text-center">
+                          <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${
+                            t.side === "buy"
+                              ? "bg-[var(--neon-green)]/10 text-[var(--neon-green)] shadow-[0_0_6px_rgba(0,255,136,0.15)]"
+                              : "bg-[var(--neon-red)]/10 text-[var(--neon-red)] shadow-[0_0_6px_rgba(255,51,102,0.15)]"
+                          }`}>
+                            {t.side.toUpperCase()}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-[var(--text-primary)]">{formatNumber(t.amount)}</td>
+                        <td className="px-4 py-3 text-right font-mono text-[var(--text-primary)]">{formatUsd(t.price)}</td>
+                        <td className="px-4 py-3 text-right font-mono text-[var(--text-primary)]">{formatUsd(t.usdc_amount)}</td>
+                        <td className="px-4 py-3 text-right font-mono text-[var(--text-secondary)]">{formatUsd(t.fee)}</td>
+                        <td className="px-4 py-3 text-right">
+                          <a
+                            href={polygonscanTx(t.tx_hash)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[var(--accent-cyan)]/50 hover:text-[var(--accent-cyan)] font-mono text-xs transition-colors duration-200"
+                          >
+                            {shortenAddress(t.tx_hash)}
+                          </a>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
             <Pagination total={tradesData.total} limit={PAGE_SIZE} offset={offset} onPageChange={setOffset} />
           </>
         ) : (
-          <p className="text-gray-500 text-center py-8">No trades found</p>
+          <p className="text-[var(--text-secondary)] text-center py-8">No trades found</p>
         )}
       </div>
     </div>
   );
 }
 
-function StatCard({ label, value, color }: { label: string; value: string; color?: string }) {
+function StatCard({ label, value, glow }: { label: string; value: string; glow?: "green" | "red" }) {
+  const borderColor = glow === "green"
+    ? "border-[var(--neon-green)]/20 shadow-[0_0_12px_rgba(0,255,136,0.08)]"
+    : glow === "red"
+    ? "border-[var(--neon-red)]/20 shadow-[0_0_12px_rgba(255,51,102,0.08)]"
+    : "";
+
+  const valueClass = glow === "green"
+    ? "glow-green"
+    : glow === "red"
+    ? "glow-red"
+    : "text-[var(--text-primary)]";
+
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-      <div className="text-xs text-gray-500 mb-1">{label}</div>
-      <div className={`text-lg font-semibold font-mono ${color ?? "text-gray-100"}`}>{value}</div>
+    <div className={`glass p-4 gradient-border-top ${borderColor}`}>
+      <div className="text-xs text-[var(--text-secondary)] mb-2 uppercase tracking-wider">{label}</div>
+      <div className={`text-xl font-bold font-mono ${valueClass}`}>{value}</div>
     </div>
   );
 }

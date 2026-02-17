@@ -15,9 +15,10 @@ export default function SortHeader({ label, column, currentSort, currentOrder, o
   return (
     <th
       onClick={() => onSort(column)}
-      className={`px-3 py-2 cursor-pointer select-none hover:text-white transition-colors ${
+      className={`px-4 py-3 cursor-pointer select-none transition-all duration-200 ${
         align === "right" ? "text-right" : "text-left"
-      } ${active ? "text-white" : "text-gray-400"}`}
+      } ${active ? "text-[var(--accent-cyan)]" : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"}`}
+      style={active ? { textShadow: "0 0 8px rgba(34, 211, 238, 0.3)" } : undefined}
     >
       <span className="inline-flex items-center gap-1">
         {label}

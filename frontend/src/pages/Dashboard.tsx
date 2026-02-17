@@ -7,9 +7,16 @@ import Pagination from "../components/Pagination";
 import AddressCell from "../components/AddressCell";
 import SortHeader from "../components/SortHeader";
 import PnlDistribution from "../charts/PnlDistribution";
-import { formatUsd, formatNumber, formatDate } from "../lib/format";
+import { formatUsd, formatNumber, formatDate, timeAgo } from "../lib/format";
 
 const PAGE_SIZE = 25;
+
+function rankClass(rank: number): string {
+  if (rank === 1) return "rank-gold font-bold";
+  if (rank === 2) return "rank-silver font-bold";
+  if (rank === 3) return "rank-bronze font-bold";
+  return "text-[var(--text-secondary)]";
+}
 
 export default function Dashboard() {
   const [sort, setSort] = useState<SortColumn>("realized_pnl");
@@ -33,54 +40,60 @@ export default function Dashboard() {
   }
 
   if (isLoading) return <Spinner />;
-  if (error) return <div className="text-red-400 text-center py-10">Failed to load leaderboard</div>;
+  if (error) return <div className="text-[var(--neon-red)] text-center py-10">Failed to load leaderboard</div>;
   if (!data) return null;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
+      {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Leaderboard</h1>
-        <span className="text-sm text-gray-500">{data.total.toLocaleString()} traders</span>
+        <h1 className="text-3xl font-black gradient-text tracking-tight">Leaderboard</h1>
+        <span className="text-sm text-[var(--text-secondary)] font-mono">{data.total.toLocaleString()} traders</span>
       </div>
 
+      {/* Chart */}
       {data.traders.length > 0 && <PnlDistribution traders={data.traders.slice(0, 15)} />}
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-gray-800 text-gray-400 text-xs uppercase tracking-wider">
-              <th className="px-3 py-2 text-left w-12">#</th>
-              <th className="px-3 py-2 text-left">Trader</th>
-              <SortHeader label="PnL" column="realized_pnl" currentSort={sort} currentOrder={order} onSort={handleSort} />
-              <SortHeader label="Volume" column="total_volume" currentSort={sort} currentOrder={order} onSort={handleSort} />
-              <SortHeader label="Trades" column="trade_count" currentSort={sort} currentOrder={order} onSort={handleSort} />
-              <th className="px-3 py-2 text-right">Markets</th>
-              <th className="px-3 py-2 text-right hidden lg:table-cell">First</th>
-              <th className="px-3 py-2 text-right hidden lg:table-cell">Last</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.traders.map((t, i) => {
-              const pnl = parseFloat(t.realized_pnl);
-              return (
-                <tr key={t.address} className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors">
-                  <td className="px-3 py-2.5 text-gray-500 font-mono">{offset + i + 1}</td>
-                  <td className="px-3 py-2.5">
-                    <AddressCell address={t.address} />
-                  </td>
-                  <td className={`px-3 py-2.5 text-right font-mono ${pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-                    {formatUsd(t.realized_pnl)}
-                  </td>
-                  <td className="px-3 py-2.5 text-right font-mono text-gray-300">{formatUsd(t.total_volume)}</td>
-                  <td className="px-3 py-2.5 text-right font-mono text-gray-300">{formatNumber(t.trade_count)}</td>
-                  <td className="px-3 py-2.5 text-right text-gray-400">{formatNumber(t.markets_traded)}</td>
-                  <td className="px-3 py-2.5 text-right text-gray-500 hidden lg:table-cell">{formatDate(t.first_trade)}</td>
-                  <td className="px-3 py-2.5 text-right text-gray-500 hidden lg:table-cell">{formatDate(t.last_trade)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      {/* Table */}
+      <div className="glass overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-[var(--border-glow)] text-[var(--text-secondary)] text-xs uppercase tracking-widest">
+                <th className="px-4 py-3 text-left w-14">#</th>
+                <th className="px-4 py-3 text-left">Trader</th>
+                <SortHeader label="PnL" column="realized_pnl" currentSort={sort} currentOrder={order} onSort={handleSort} />
+                <SortHeader label="Volume" column="total_volume" currentSort={sort} currentOrder={order} onSort={handleSort} />
+                <SortHeader label="Trades" column="trade_count" currentSort={sort} currentOrder={order} onSort={handleSort} />
+                <th className="px-4 py-3 text-right">Markets</th>
+                <th className="px-4 py-3 text-right hidden lg:table-cell">First</th>
+                <th className="px-4 py-3 text-right hidden lg:table-cell">Last</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.traders.map((t, i) => {
+                const rank = offset + i + 1;
+                const pnl = parseFloat(t.realized_pnl);
+                return (
+                  <tr key={t.address} className="border-b border-[var(--border-subtle)] row-glow">
+                    <td className={`px-4 py-3 font-mono text-sm ${rankClass(rank)}`}>{rank}</td>
+                    <td className="px-4 py-3">
+                      <AddressCell address={t.address} />
+                    </td>
+                    <td className={`px-4 py-3 text-right font-mono ${pnl >= 0 ? "glow-green" : "glow-red"}`}>
+                      {formatUsd(t.realized_pnl)}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono text-[var(--text-primary)]">{formatUsd(t.total_volume)}</td>
+                    <td className="px-4 py-3 text-right font-mono text-[var(--text-primary)]">{formatNumber(t.trade_count)}</td>
+                    <td className="px-4 py-3 text-right text-[var(--text-secondary)]">{formatNumber(t.markets_traded)}</td>
+                    <td className="px-4 py-3 text-right text-[var(--text-secondary)] hidden lg:table-cell">{formatDate(t.first_trade)}</td>
+                    <td className="px-4 py-3 text-right text-[var(--text-secondary)] hidden lg:table-cell">{timeAgo(t.last_trade)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <Pagination total={data.total} limit={PAGE_SIZE} offset={offset} onPageChange={setOffset} />

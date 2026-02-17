@@ -12,17 +12,23 @@ export default function AddressCell({ address, link = true }: Props) {
   return (
     <div className="flex items-center gap-2">
       {link ? (
-        <Link to={`/trader/${address}`} className="text-blue-400 hover:text-blue-300 font-mono text-sm transition-colors">
+        <Link
+          to={`/trader/${address}`}
+          className="text-[var(--accent-cyan)] hover:text-[var(--accent-cyan)] hover:brightness-125 font-mono text-sm transition-all duration-200"
+          style={{ textShadow: "0 0 0px transparent" }}
+          onMouseEnter={(e) => (e.currentTarget.style.textShadow = "0 0 8px rgba(34,211,238,0.4)")}
+          onMouseLeave={(e) => (e.currentTarget.style.textShadow = "0 0 0px transparent")}
+        >
           {short}
         </Link>
       ) : (
-        <span className="font-mono text-sm">{short}</span>
+        <span className="font-mono text-sm text-[var(--accent-cyan)]">{short}</span>
       )}
       <a
         href={polygonscanAddress(address)}
         target="_blank"
         rel="noopener noreferrer"
-        className="text-gray-600 hover:text-gray-400 transition-colors"
+        className="text-[var(--text-secondary)] opacity-40 hover:opacity-100 hover:text-[var(--accent-cyan)] transition-all duration-200"
         title="View on Polygonscan"
       >
         <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
