@@ -1,0 +1,113 @@
+[
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "name": "redeemer",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "name": "collateralToken",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "name": "parentCollectionId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "name": "conditionId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "name": "indexSets",
+        "type": "uint256[]"
+      },
+      {
+        "indexed": false,
+        "name": "payout",
+        "type": "uint256"
+      }
+    ],
+    "name": "PayoutRedemption",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "name": "stakeholder",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "name": "collateralToken",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "name": "parentCollectionId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": true,
+        "name": "conditionId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "name": "partition",
+        "type": "uint256[]"
+      },
+      {
+        "indexed": false,
+        "name": "amount",
+        "type": "uint256"
+      }
+    ],
+    "name": "PositionSplit",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "name": "stakeholder",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "name": "collateralToken",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "name": "parentCollectionId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": true,
+        "name": "conditionId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "name": "partition",
+        "type": "uint256[]"
+      },
+      {
+        "indexed": false,
+        "name": "amount",
+        "type": "uint256"
+      }
+    ],
+    "name": "PositionsMerge",
+    "type": "event"
+  }
+]
