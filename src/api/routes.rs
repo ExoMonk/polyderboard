@@ -1,0 +1,189 @@
+use axum::{
+    Json,
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::IntoResponse,
+};
+
+use super::types::*;
+
+const ALLOWED_SORT_COLUMNS: &[&str] = &["realized_pnl", "total_volume", "trade_count"];
+
+pub async fn leaderboard(
+    State(client): State<clickhouse::Client>,
+    Query(params): Query<LeaderboardParams>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let sort = params.sort.as_deref().unwrap_or("realized_pnl");
+    let order = params.order.as_deref().unwrap_or("desc");
+    let limit = params.limit.unwrap_or(100).min(500);
+    let offset = params.offset.unwrap_or(0);
+
+    if !ALLOWED_SORT_COLUMNS.contains(&sort) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("Invalid sort column. Allowed: {ALLOWED_SORT_COLUMNS:?}"),
+        ));
+    }
+    if order != "asc" && order != "desc" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Invalid order. Allowed: asc, desc".into(),
+        ));
+    }
+
+    let query = format!(
+        "SELECT
+            trader AS address,
+            toString(sum(usdc_amount)) AS total_volume,
+            count() AS trade_count,
+            uniqExact(asset_id) AS markets_traded,
+            toString(sumIf(usdc_amount, side = 'sell') - sumIf(usdc_amount, side = 'buy') - sum(fee)) AS realized_pnl,
+            toString(sum(fee)) AS total_fees,
+            toString(min(block_timestamp)) AS first_trade,
+            toString(max(block_timestamp)) AS last_trade
+        FROM poly_dearboard.trades
+        GROUP BY trader
+        ORDER BY {sort} {order}
+        LIMIT ? OFFSET ?"
+    );
+
+    let traders = client
+        .query(&query)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all::<TraderSummary>()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let total: u64 = client
+        .query("SELECT uniqExact(trader) FROM poly_dearboard.trades")
+        .fetch_one()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(LeaderboardResponse {
+        traders,
+        total,
+        limit,
+        offset,
+    }))
+}
+
+pub async fn trader_stats(
+    State(client): State<clickhouse::Client>,
+    Path(address): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let address = address.to_lowercase();
+
+    let result = client
+        .query(
+            "SELECT
+                trader AS address,
+                toString(sum(usdc_amount)) AS total_volume,
+                count() AS trade_count,
+                uniqExact(asset_id) AS markets_traded,
+                toString(sumIf(usdc_amount, side = 'sell') - sumIf(usdc_amount, side = 'buy') - sum(fee)) AS realized_pnl,
+                toString(sum(fee)) AS total_fees,
+                min(block_timestamp) AS first_trade,
+                max(block_timestamp) AS last_trade
+            FROM poly_dearboard.trades
+            WHERE trader = ?
+            GROUP BY trader",
+        )
+        .bind(&address)
+        .fetch_optional::<TraderSummary>()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    match result {
+        Some(stats) => Ok(Json(stats)),
+        None => Err((StatusCode::NOT_FOUND, "Trader not found".into())),
+    }
+}
+
+pub async fn trader_trades(
+    State(client): State<clickhouse::Client>,
+    Path(address): Path<String>,
+    Query(params): Query<TradesParams>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let address = address.to_lowercase();
+    let limit = params.limit.unwrap_or(50).min(200);
+    let offset = params.offset.unwrap_or(0);
+    let side_filter = params.side.as_deref().unwrap_or("");
+
+    if !side_filter.is_empty() && side_filter != "buy" && side_filter != "sell" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Invalid side filter. Allowed: buy, sell".into(),
+        ));
+    }
+
+    let trades = client
+        .query(
+            "SELECT
+                tx_hash,
+                block_number,
+                toString(block_timestamp) AS block_timestamp,
+                exchange,
+                side,
+                asset_id,
+                toString(amount) AS amount,
+                toString(price) AS price,
+                toString(usdc_amount) AS usdc_amount,
+                toString(fee) AS fee
+            FROM poly_dearboard.trades
+            WHERE trader = ?
+              AND (side = ? OR ? = '')
+            ORDER BY block_number DESC, log_index DESC
+            LIMIT ? OFFSET ?",
+        )
+        .bind(&address)
+        .bind(side_filter)
+        .bind(side_filter)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all::<TradeRecord>()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let total: u64 = client
+        .query(
+            "SELECT count() FROM poly_dearboard.trades WHERE trader = ? AND (side = ? OR ? = '')",
+        )
+        .bind(&address)
+        .bind(side_filter)
+        .bind(side_filter)
+        .fetch_one()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(TradesResponse {
+        trades,
+        total,
+        limit,
+        offset,
+    }))
+}
+
+pub async fn health(
+    State(client): State<clickhouse::Client>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let stats = client
+        .query(
+            "SELECT
+                count() AS trade_count,
+                uniqExact(trader) AS trader_count,
+                max(block_number) AS latest_block
+            FROM poly_dearboard.trades",
+        )
+        .fetch_one::<HealthStats>()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(HealthResponse {
+        status: "ok",
+        trade_count: stats.trade_count,
+        trader_count: stats.trader_count,
+        latest_block: stats.latest_block,
+    }))
+}
