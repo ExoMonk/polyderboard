@@ -1,35 +1,48 @@
 services:
-  postgres:
-    image: postgres:16-alpine
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
     environment:
-      POSTGRES_USER: poly
-      POSTGRES_PASSWORD: poly
-      POSTGRES_DB: poly_dearboard
+      CLICKHOUSE_DB: poly_dearboard
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
     ports:
-      - "5434:5432"
+      - "8123:8123"    # HTTP
+      - "9000:9000"    # Native
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - chdata:/var/lib/clickhouse
+      - ../indexer/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U poly"]
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
       interval: 5s
       retries: 5
 
   indexer:
-    build:
-      context: ..
-      dockerfile: Dockerfile
+    image: ghcr.io/joshstevens19/rindexer:latest
     depends_on:
-      postgres:
+      clickhouse:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://poly:poly@postgres:5432/poly_dearboard
+      CLICKHOUSE_URL: http://clickhouse:8123
+      DATABASE_URL: clickhouse://default:@clickhouse:9000/poly_dearboard
       POLYGON_RPC_URL: ${POLYGON_RPC_URL:-https://polygon-rpc.com}
+    volumes:
+      - ../indexer/polywatcher.yaml:/app/rindexer.yaml
+      - ../indexer/abi:/app/abi
+    command: ["start", "all", "--path", "/app/rindexer.yaml"]
+
+  api:
+    build:
+      context: ..
+      dockerfile: development/Dockerfile
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    environment:
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_DB: poly_dearboard
       API_PORT: "3001"
     ports:
       - "3001:3001"
-    volumes:
-      - ../indexer/polywatcher.yaml:/app/indexer/polywatcher.yaml
-      - ../indexer/abi:/app/indexer/abi
 
 volumes:
-  pgdata:
+  chdata:
