@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { fetchLeaderboard } from "../api";
-import type { SortColumn, SortOrder } from "../types";
+import type { SortColumn, SortOrder, Timeframe } from "../types";
 import Spinner from "../components/Spinner";
 import Pagination from "../components/Pagination";
 import AddressCell from "../components/AddressCell";
@@ -10,6 +10,12 @@ import PnlDistribution from "../charts/PnlDistribution";
 import { formatUsd, formatNumber, formatDate, timeAgo } from "../lib/format";
 
 const PAGE_SIZE = 25;
+
+const TIMEFRAMES = [
+  { label: "1H", value: "1h" },
+  { label: "24H", value: "24h" },
+  { label: "All", value: "all" },
+] as const;
 
 function rankClass(rank: number): string {
   if (rank === 1) return "rank-gold font-bold";
@@ -22,10 +28,11 @@ export default function Dashboard() {
   const [sort, setSort] = useState<SortColumn>("realized_pnl");
   const [order, setOrder] = useState<SortOrder>("desc");
   const [offset, setOffset] = useState(0);
+  const [timeframe, setTimeframe] = useState<Timeframe>("all");
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["leaderboard", sort, order, offset],
-    queryFn: () => fetchLeaderboard({ sort, order, limit: PAGE_SIZE, offset }),
+    queryKey: ["leaderboard", sort, order, offset, timeframe],
+    queryFn: () => fetchLeaderboard({ sort, order, limit: PAGE_SIZE, offset, timeframe }),
     placeholderData: keepPreviousData,
   });
 
@@ -47,7 +54,24 @@ export default function Dashboard() {
     <div className="space-y-8">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-black gradient-text tracking-tight">Leaderboard</h1>
+        <div className="flex items-center gap-4">
+          <h1 className="text-3xl font-black gradient-text tracking-tight">Leaderboard</h1>
+          <div className="flex gap-1">
+            {TIMEFRAMES.map((tf) => (
+              <button
+                key={tf.value}
+                onClick={() => { setTimeframe(tf.value); setOffset(0); }}
+                className={`px-4 py-1.5 text-xs rounded-full font-medium transition-all duration-200 ${
+                  timeframe === tf.value
+                    ? "bg-[var(--accent-cyan)]/10 text-[var(--accent-cyan)] border border-[var(--accent-cyan)]/30 shadow-[0_0_8px_rgba(34,211,238,0.15)]"
+                    : "text-[var(--text-secondary)] border border-transparent hover:text-[var(--text-primary)] hover:border-[var(--border-glow)]"
+                }`}
+              >
+                {tf.label}
+              </button>
+            ))}
+          </div>
+        </div>
         <span className="text-sm text-[var(--text-secondary)] font-mono">{data.total.toLocaleString()} traders</span>
       </div>
 

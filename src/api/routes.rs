@@ -58,6 +58,12 @@ pub async fn leaderboard(
         _ => unreachable!(),
     };
 
+    let time_filter = match params.timeframe.as_deref().unwrap_or("all") {
+        "1h" => "AND block_timestamp >= now() - INTERVAL 1 HOUR",
+        "24h" => "AND block_timestamp >= now() - INTERVAL 24 HOUR",
+        _ => "",
+    };
+
     let exclude = exclude_clause();
 
     let query = format!(
@@ -78,7 +84,7 @@ pub async fn leaderboard(
                        min(block_timestamp) AS first_ts,
                        max(block_timestamp) AS last_ts
                 FROM poly_dearboard.trades
-                WHERE trader NOT IN ({exclude})
+                WHERE trader NOT IN ({exclude}) {time_filter}
                 GROUP BY trader, asset_id
             )
         SELECT
@@ -109,7 +115,7 @@ pub async fn leaderboard(
     let total: u64 = state
         .db
         .query(&format!(
-            "SELECT uniqExact(trader) FROM poly_dearboard.trades WHERE trader NOT IN ({exclude})"
+            "SELECT uniqExact(trader) FROM poly_dearboard.trades WHERE trader NOT IN ({exclude}) {time_filter}"
         ))
         .fetch_one()
         .await
@@ -524,6 +530,14 @@ pub async fn trader_positions(
 
     let positions = rows
         .into_iter()
+        .filter(|r| {
+            // Filter out resolved markets — if we have market info and it's inactive,
+            // the market has resolved and tokens were likely redeemed.
+            market_info
+                .get(&r.asset_id)
+                .map(|i| i.active)
+                .unwrap_or(true) // keep if we can't determine status
+        })
         .map(|r| {
             let info = market_info.get(&r.asset_id);
             OpenPosition {

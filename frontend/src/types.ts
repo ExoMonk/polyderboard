@@ -45,6 +45,7 @@ export interface HealthResponse {
 
 export type SortColumn = "realized_pnl" | "total_volume" | "trade_count";
 export type SortOrder = "asc" | "desc";
+export type Timeframe = "1h" | "24h" | "all";
 
 export interface HotMarket {
   token_id: string;

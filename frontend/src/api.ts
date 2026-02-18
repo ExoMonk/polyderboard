@@ -8,6 +8,7 @@ import type {
   PositionsResponse,
   SortColumn,
   SortOrder,
+  Timeframe,
 } from "./types";
 
 const BASE = "/api";
@@ -17,12 +18,14 @@ export async function fetchLeaderboard(params: {
   order?: SortOrder;
   limit?: number;
   offset?: number;
+  timeframe?: Timeframe;
 }): Promise<LeaderboardResponse> {
   const sp = new URLSearchParams();
   if (params.sort) sp.set("sort", params.sort);
   if (params.order) sp.set("order", params.order);
   if (params.limit) sp.set("limit", String(params.limit));
   if (params.offset !== undefined) sp.set("offset", String(params.offset));
+  if (params.timeframe && params.timeframe !== "all") sp.set("timeframe", params.timeframe);
   const res = await fetch(`${BASE}/leaderboard?${sp}`);
   if (!res.ok) throw new Error(`Leaderboard fetch failed: ${res.status}`);
   return res.json();

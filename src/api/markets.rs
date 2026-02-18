@@ -9,6 +9,7 @@ pub struct MarketInfo {
     pub question: String,
     pub outcome: String,
     pub category: String,
+    pub active: bool,
 }
 
 /// Cache keyed by the first 15 significant digits of the token ID.
@@ -85,6 +86,7 @@ pub async fn warm_cache(http: &reqwest::Client, cache: &MarketCache) {
                 for market in &event.markets {
                     let ids = market.parsed_token_ids();
                     let outcomes = market.parsed_outcomes();
+                    let active = market.is_active();
                     for (i, id) in ids.iter().enumerate() {
                         let outcome = outcomes.get(i).cloned().unwrap_or_default();
                         c.insert(
@@ -93,6 +95,7 @@ pub async fn warm_cache(http: &reqwest::Client, cache: &MarketCache) {
                                 question: market.question.clone().unwrap_or_default(),
                                 outcome,
                                 category: category.clone(),
+                                active,
                             },
                         );
                         total_markets += 1;
@@ -202,10 +205,12 @@ async fn fetch_market_info(http: &reqwest::Client, token_id: &str) -> Option<Mar
         .and_then(|idx| outcomes.get(idx).cloned())
         .unwrap_or_default();
 
+    let active = market.is_active();
     Some(MarketInfo {
         question: market.question.unwrap_or_default(),
         outcome,
         category: String::new(),
+        active,
     })
 }
 
@@ -241,9 +246,18 @@ struct GammaMarket {
     outcomes: Option<String>,
     /// JSON-encoded string array of token IDs
     clob_token_ids: Option<String>,
+    #[serde(default)]
+    active: Option<bool>,
+    #[serde(default)]
+    closed: Option<bool>,
 }
 
 impl GammaMarket {
+    fn is_active(&self) -> bool {
+        // Market is active if not explicitly closed and not explicitly inactive
+        !self.closed.unwrap_or(false) && self.active.unwrap_or(true)
+    }
+
     fn parsed_outcomes(&self) -> Vec<String> {
         self.outcomes
             .as_deref()

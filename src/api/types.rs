@@ -64,6 +64,7 @@ pub struct LeaderboardParams {
     pub order: Option<String>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
+    pub timeframe: Option<String>,
 }
 
 #[derive(Deserialize)]
