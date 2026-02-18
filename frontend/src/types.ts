@@ -45,3 +45,55 @@ export interface HealthResponse {
 
 export type SortColumn = "realized_pnl" | "total_volume" | "trade_count";
 export type SortOrder = "asc" | "desc";
+
+export interface HotMarket {
+  token_id: string;
+  all_token_ids: string[];
+  question: string;
+  outcome: string;
+  category: string;
+  volume: string;
+  trade_count: number;
+  unique_traders: number;
+  last_price: string;
+  last_trade: string;
+}
+
+export interface HotMarketsResponse {
+  markets: HotMarket[];
+}
+
+export interface FeedTrade {
+  tx_hash: string;
+  block_timestamp: string;
+  trader: string;
+  side: string;
+  asset_id: string;
+  amount: string;
+  price: string;
+  usdc_amount: string;
+  question: string;
+  outcome: string;
+  category: string;
+}
+
+export interface LiveFeedResponse {
+  trades: FeedTrade[];
+}
+
+export interface OpenPosition {
+  asset_id: string;
+  question: string;
+  outcome: string;
+  side: string;
+  net_tokens: string;
+  cost_basis: string;
+  latest_price: string;
+  pnl: string;
+  volume: string;
+  trade_count: number;
+}
+
+export interface PositionsResponse {
+  positions: OpenPosition[];
+}

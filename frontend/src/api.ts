@@ -3,6 +3,9 @@ import type {
   TraderSummary,
   TradesResponse,
   HealthResponse,
+  HotMarketsResponse,
+  LiveFeedResponse,
+  PositionsResponse,
   SortColumn,
   SortOrder,
 } from "./types";
@@ -47,5 +50,35 @@ export async function fetchTraderTrades(
 export async function fetchHealth(): Promise<HealthResponse> {
   const res = await fetch(`${BASE}/health`);
   if (!res.ok) throw new Error(`Health fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchHotMarkets(params?: {
+  period?: string;
+  limit?: number;
+}): Promise<HotMarketsResponse> {
+  const sp = new URLSearchParams();
+  if (params?.period) sp.set("period", params.period);
+  if (params?.limit) sp.set("limit", String(params.limit));
+  const res = await fetch(`${BASE}/markets/hot?${sp}`);
+  if (!res.ok) throw new Error(`Hot markets fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchRecentTrades(params?: {
+  limit?: number;
+  token_id?: string;
+}): Promise<LiveFeedResponse> {
+  const sp = new URLSearchParams();
+  if (params?.limit) sp.set("limit", String(params.limit));
+  if (params?.token_id) sp.set("token_id", params.token_id);
+  const res = await fetch(`${BASE}/trades/recent?${sp}`);
+  if (!res.ok) throw new Error(`Recent trades fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchTraderPositions(address: string): Promise<PositionsResponse> {
+  const res = await fetch(`${BASE}/trader/${address}/positions`);
+  if (!res.ok) throw new Error(`Positions fetch failed: ${res.status}`);
   return res.json();
 }

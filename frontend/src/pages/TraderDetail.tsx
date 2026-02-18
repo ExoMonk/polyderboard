@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
-import { fetchTrader, fetchTraderTrades } from "../api";
+import { fetchTrader, fetchTraderTrades, fetchTraderPositions } from "../api";
 import Spinner from "../components/Spinner";
 import Pagination from "../components/Pagination";
 import TradeActivity from "../charts/TradeActivity";
@@ -25,6 +25,12 @@ export default function TraderDetail() {
     queryFn: () => fetchTraderTrades(address!, { limit: PAGE_SIZE, offset, side: sideFilter || undefined }),
     enabled: !!address,
     placeholderData: keepPreviousData,
+  });
+
+  const { data: positionsData } = useQuery({
+    queryKey: ["positions", address],
+    queryFn: () => fetchTraderPositions(address!),
+    enabled: !!address,
   });
 
   if (loadingTrader) return <Spinner />;
@@ -72,7 +78,7 @@ export default function TraderDetail() {
 
       {/* Stats Cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-        <StatCard label="Realized PnL" value={formatUsd(trader.realized_pnl)} glow={pnl >= 0 ? "green" : "red"} />
+        <StatCard label="PnL" value={formatUsd(trader.realized_pnl)} glow={pnl >= 0 ? "green" : "red"} />
         <StatCard label="Total Volume" value={formatUsd(trader.total_volume)} />
         <StatCard label="Trades" value={formatNumber(trader.trade_count)} />
         <StatCard label="Markets" value={formatNumber(trader.markets_traded)} />
@@ -82,6 +88,80 @@ export default function TraderDetail() {
 
       {/* Trade Activity Chart */}
       {tradesData && tradesData.trades.length > 0 && <TradeActivity trades={tradesData.trades} />}
+
+      {/* Open Positions */}
+      {positionsData && positionsData.positions.length > 0 && (
+        <div>
+          <h2 className="text-lg font-bold gradient-text mb-4">Positions</h2>
+          <div className="glass overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-[var(--border-glow)] text-[var(--text-secondary)] text-xs uppercase tracking-widest">
+                    <th className="px-4 py-3 text-left">Market</th>
+                    <th className="px-4 py-3 text-center">Outcome</th>
+                    <th className="px-4 py-3 text-center">Side</th>
+                    <th className="px-4 py-3 text-right">Tokens</th>
+                    <th className="px-4 py-3 text-right">Avg Cost</th>
+                    <th className="px-4 py-3 text-right">Price</th>
+                    <th className="px-4 py-3 text-right">PnL</th>
+                    <th className="px-4 py-3 text-right">Volume</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {positionsData.positions.map((p) => {
+                    const positionPnl = parseFloat(p.pnl);
+                    return (
+                      <tr key={p.asset_id} className="border-b border-[var(--border-subtle)] row-glow">
+                        <td className="px-4 py-3 text-[var(--text-primary)] max-w-xs truncate" title={p.question}>
+                          {p.question}
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          {p.outcome && (
+                            <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${
+                              p.outcome.toLowerCase() === "yes"
+                                ? "bg-[var(--neon-green)]/10 text-[var(--neon-green)]"
+                                : "bg-[var(--neon-red)]/10 text-[var(--neon-red)]"
+                            }`}>
+                              {p.outcome}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${
+                            p.side === "long"
+                              ? "bg-[var(--neon-green)]/10 text-[var(--neon-green)] shadow-[0_0_6px_rgba(0,255,136,0.15)]"
+                              : p.side === "short"
+                              ? "bg-[var(--neon-red)]/10 text-[var(--neon-red)] shadow-[0_0_6px_rgba(255,51,102,0.15)]"
+                              : "bg-[var(--text-secondary)]/10 text-[var(--text-secondary)]"
+                          }`}>
+                            {p.side.toUpperCase()}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-[var(--text-primary)]">
+                          {formatNumber(Math.abs(parseFloat(p.net_tokens)))}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-[var(--text-secondary)]">
+                          {formatUsd(p.cost_basis)}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-[var(--text-primary)]">
+                          {formatUsd(p.latest_price)}
+                        </td>
+                        <td className={`px-4 py-3 text-right font-mono ${positionPnl >= 0 ? "glow-green" : "glow-red"}`}>
+                          {formatUsd(p.pnl)}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-[var(--text-secondary)]">
+                          {formatUsd(p.volume)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Trades Table */}
       <div>

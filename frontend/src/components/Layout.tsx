@@ -28,6 +28,9 @@ export default function Layout({ children }: { children: ReactNode }) {
             <Link to="/" className="text-[var(--text-secondary)] hover:text-[var(--accent-cyan)] transition-colors duration-200">
               Leaderboard
             </Link>
+            <Link to="/activity" className="text-[var(--text-secondary)] hover:text-[var(--accent-cyan)] transition-colors duration-200">
+              Activity
+            </Link>
           </nav>
         </div>
       </header>
