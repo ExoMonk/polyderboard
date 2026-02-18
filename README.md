@@ -68,6 +68,8 @@ This values open positions at the current market price, producing meaningful PnL
 | Command | What it does |
 | --- | --- |
 | `make indexer` | Starts ClickHouse + rindexer |
+| `make live` | Starts from current block (no backfill) |
+| `FROM=80000000 make backfill` | Backfills from block to first indexed block |
 | `make serve` | Starts the Axum API on port 3001 |
 | `make query` | Runs E2E leaderboard queries |
 | `make clean` | Tears down Docker containers + volumes |

@@ -1,4 +1,4 @@
-.PHONY: indexer live serve query frontend clean
+.PHONY: indexer live serve query frontend backfill backfill-stop prune clean
 
 COMPOSE := docker compose -f development/docker-compose.yml
 
@@ -17,5 +17,22 @@ query: ## Run E2E leaderboard queries against the API
 frontend: ## Start frontend dev server on port 5173
 	cd frontend && npm run dev
 
+backfill: ## Backfill historical blocks: FROM=<block> make backfill
+	@./scripts/backfill.sh
+
+backfill-stop: ## Stop a running backfill
+	@docker stop poly-backfill 2>/dev/null && docker rm poly-backfill 2>/dev/null && echo "Backfill stopped" || echo "No backfill running"
+
+prune: ## Delete data before a block: BEFORE=83125113 make prune
+	@test -n "$(BEFORE)" || { echo "Usage: BEFORE=<block_number> make prune"; exit 1; }
+	@echo "Deleting all data before block $(BEFORE)..."
+	@$(COMPOSE) exec -T clickhouse clickhouse-client --multiquery \
+		-q "ALTER TABLE poly_dearboard.trades DELETE WHERE block_number < $(BEFORE); \
+		    ALTER TABLE poly_dearboard_ctf_exchange.order_filled DELETE WHERE block_number < $(BEFORE); \
+		    ALTER TABLE poly_dearboard_neg_risk_ctf_exchange.order_filled DELETE WHERE block_number < $(BEFORE); \
+		    ALTER TABLE poly_dearboard_conditional_tokens.payout_redemption DELETE WHERE block_number < $(BEFORE);"
+	@echo "Mutations queued. Data before block $(BEFORE) will be removed."
+
 clean: ## Tear down Docker containers + volumes
 	$(COMPOSE) down -v
+	@docker rm -f poly-backfill 2>/dev/null || true
