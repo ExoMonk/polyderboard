@@ -1,4 +1,4 @@
-.PHONY: indexer live serve query frontend backfill backfill-stop prune clean
+.PHONY: indexer live serve query frontend backfill backfill-resolutions backfill-stop prune clean
 
 COMPOSE := docker compose -f development/docker-compose.yml
 
@@ -17,7 +17,7 @@ query: ## Run E2E leaderboard queries against the API
 frontend: ## Start frontend dev server on port 5173
 	cd frontend && npm run dev
 
-backfill: ## Backfill historical blocks: FROM=<block> make backfill
+backfill: ## Backfill historical blocks: FROM=<block> [TO=<block>] make backfill
 	@./scripts/backfill.sh
 
 backfill-stop: ## Stop a running backfill

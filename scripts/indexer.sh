@@ -8,7 +8,7 @@ YAML="$ROOT/indexer/polywatcher.yaml"
 # ── Live mode: patch start_block to current block ───────────────────────────
 if [ "${LIVE:-}" = "1" ]; then
     echo "Fetching current Polygon block..."
-    BLOCK=$(curl -s -X POST https://polygon-rpc.com \
+    BLOCK=$(curl -sf -X POST https://polygon.drpc.org \
         -H "Content-Type: application/json" \
         -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
         | python3 -c "import sys,json; print(int(json.load(sys.stdin)['result'],16))")

@@ -91,6 +91,28 @@ CREATE TABLE IF NOT EXISTS poly_dearboard_conditional_tokens.payout_redemption (
 ) ENGINE = ReplacingMergeTree
 ORDER BY (network, block_number, tx_hash, log_index);
 
+CREATE TABLE IF NOT EXISTS poly_dearboard_conditional_tokens.condition_resolution (
+    contract_address    FixedString(42),
+    condition_id        String,
+    oracle              FixedString(42),
+    question_id         String,
+    outcome_slot_count  String,
+    payout_numerators   Array(String),
+    tx_hash             FixedString(66),
+    block_number        UInt64,
+    block_timestamp     Nullable(DateTime('UTC')),
+    block_hash          FixedString(66),
+    network             String,
+    tx_index            UInt64,
+    log_index           UInt64,
+
+    INDEX idx_block_num (block_number) TYPE minmax GRANULARITY 1,
+    INDEX idx_timestamp (block_timestamp) TYPE bloom_filter GRANULARITY 1,
+    INDEX idx_condition_id (condition_id) TYPE bloom_filter GRANULARITY 1,
+    INDEX idx_tx_hash (tx_hash) TYPE bloom_filter GRANULARITY 1
+) ENGINE = ReplacingMergeTree
+ORDER BY (network, block_number, tx_hash, log_index);
+
 -- =============================================================================
 -- 2. Normalized trades target table
 -- =============================================================================

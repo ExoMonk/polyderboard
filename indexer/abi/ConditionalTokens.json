@@ -109,5 +109,37 @@
     ],
     "name": "PositionsMerge",
     "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "name": "conditionId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": true,
+        "name": "oracle",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "name": "questionId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "name": "outcomeSlotCount",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "name": "payoutNumerators",
+        "type": "uint256[]"
+      }
+    ],
+    "name": "ConditionResolution",
+    "type": "event"
   }
 ]

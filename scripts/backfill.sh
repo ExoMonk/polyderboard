@@ -8,6 +8,7 @@ BACKFILL_YAML="$ROOT/indexer/polywatcher_backfill.yaml"
 CONTAINER="poly-backfill"
 
 FROM="${FROM:?Usage: FROM=<block_number> make backfill}"
+TO="${TO:-}"
 
 CH() { $COMPOSE exec -T clickhouse clickhouse-client --query "$1" 2>/dev/null; }
 
@@ -30,20 +31,22 @@ done
 echo " ready"
 
 # ── Determine end_block from existing data ──────────────────────────────────
-FIRST_BLOCK=$(CH "SELECT min(block_number) FROM poly_dearboard.trades WHERE block_number > 0" | tr -d '[:space:]')
+if [ -z "$TO" ]; then
+    TO=$(CH "SELECT min(block_number) FROM poly_dearboard.trades WHERE block_number > 0" | tr -d '[:space:]')
+fi
 
-if [ -z "$FIRST_BLOCK" ] || [ "$FIRST_BLOCK" = "0" ]; then
+if [ -z "$TO" ] || [ "$TO" = "0" ]; then
     echo "Error: No existing data in ClickHouse. Run 'make indexer' first."
     exit 1
 fi
 
-if [ "$FROM" -ge "$FIRST_BLOCK" ]; then
-    echo "Error: FROM block ($FROM) must be before first indexed block ($FIRST_BLOCK)"
+if [ "$FROM" -ge "$TO" ]; then
+    echo "Error: FROM block ($FROM) must be before end block ($TO)"
     exit 1
 fi
 
 echo ""
-echo "Backfill range: block $FROM → $FIRST_BLOCK"
+echo "Backfill range: block $FROM → $TO"
 echo ""
 
 # ── Generate backfill YAML ──────────────────────────────────────────────────
@@ -54,7 +57,7 @@ cp "$YAML" "$BACKFILL_YAML"
 sed -i.bak "s/^name: .*/name: PolyDearboardBackfill/" "$BACKFILL_YAML"
 sed -i.bak "s/start_block: \"[0-9]*\"/start_block: \"$FROM\"/" "$BACKFILL_YAML"
 sed -i.bak "/start_block:/a\\
-        end_block: \"$FIRST_BLOCK\"" "$BACKFILL_YAML"
+        end_block: \"$TO\"" "$BACKFILL_YAML"
 rm -f "${BACKFILL_YAML}.bak"
 
 trap 'rm -f "$BACKFILL_YAML"' EXIT
@@ -105,4 +108,4 @@ CH "DROP DATABASE IF EXISTS poly_dearboard_backfill_conditional_tokens"
 CH "DROP DATABASE IF EXISTS poly_dearboard_backfill"
 
 echo ""
-echo "Backfill complete! Range $FROM → $FIRST_BLOCK filled."
+echo "Backfill complete! Range $FROM → $TO filled."
