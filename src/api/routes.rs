@@ -5,6 +5,8 @@ use axum::{
     response::IntoResponse,
 };
 
+use super::markets;
+use super::server::AppState;
 use super::types::*;
 
 const ALLOWED_SORT_COLUMNS: &[&str] = &["realized_pnl", "total_volume", "trade_count"];
@@ -19,8 +21,16 @@ const EXCHANGE_CONTRACTS: &[&str] = &[
     "0x02A86f51aA7B8b1c17c30364748d5Ae4a0727E23", // Polymarket Relayer
 ];
 
+fn exclude_clause() -> String {
+    EXCHANGE_CONTRACTS
+        .iter()
+        .map(|a| format!("'{a}'"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 pub async fn leaderboard(
-    State(client): State<clickhouse::Client>,
+    State(state): State<AppState>,
     Query(params): Query<LeaderboardParams>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let sort = params.sort.as_deref().unwrap_or("realized_pnl");
@@ -41,35 +51,54 @@ pub async fn leaderboard(
         ));
     }
 
-    // Map API sort names to numeric ClickHouse expressions for proper ordering
-    // Note: fee is 0 in maker-only MVs (fees tracked separately if needed)
     let sort_expr = match sort {
-        "realized_pnl" => "sumIf(usdc_amount, side = 'sell') - sumIf(usdc_amount, side = 'buy')",
-        "total_volume" => "sum(usdc_amount)",
-        "trade_count" => "count()",
+        "realized_pnl" => "sum(p.cash_flow + p.net_tokens * lp.latest_price)",
+        "total_volume" => "sum(p.volume)",
+        "trade_count" => "sum(p.trades)",
         _ => unreachable!(),
     };
 
-    let exclude = EXCHANGE_CONTRACTS.iter().map(|a| format!("'{a}'")).collect::<Vec<_>>().join(",");
+    let exclude = exclude_clause();
 
     let query = format!(
-        "SELECT
-            toString(trader) AS address,
-            toString(sum(usdc_amount)) AS total_volume,
-            count() AS trade_count,
-            uniqExact(asset_id) AS markets_traded,
-            toString(sumIf(usdc_amount, side = 'sell') - sumIf(usdc_amount, side = 'buy')) AS realized_pnl,
-            toString(sum(fee)) AS total_fees,
-            ifNull(toString(min(block_timestamp)), '') AS first_trade,
-            ifNull(toString(max(block_timestamp)), '') AS last_trade
-        FROM poly_dearboard.trades
-        WHERE trader NOT IN ({exclude})
-        GROUP BY trader
+        "WITH
+            latest_prices AS (
+                SELECT asset_id,
+                       argMax(price, block_number * 1000000 + log_index) AS latest_price
+                FROM poly_dearboard.trades
+                GROUP BY asset_id
+            ),
+            positions AS (
+                SELECT trader, asset_id,
+                       sumIf(amount, side = 'buy') - sumIf(amount, side = 'sell') AS net_tokens,
+                       sumIf(usdc_amount, side = 'sell') - sumIf(usdc_amount, side = 'buy') AS cash_flow,
+                       sum(usdc_amount) AS volume,
+                       count() AS trades,
+                       sum(fee) AS fees,
+                       min(block_timestamp) AS first_ts,
+                       max(block_timestamp) AS last_ts
+                FROM poly_dearboard.trades
+                WHERE trader NOT IN ({exclude})
+                GROUP BY trader, asset_id
+            )
+        SELECT
+            toString(p.trader) AS address,
+            toString(sum(p.volume)) AS total_volume,
+            sum(p.trades) AS trade_count,
+            count() AS markets_traded,
+            toString(ROUND(sum(p.cash_flow + p.net_tokens * lp.latest_price), 6)) AS realized_pnl,
+            toString(sum(p.fees)) AS total_fees,
+            ifNull(toString(min(p.first_ts)), '') AS first_trade,
+            ifNull(toString(max(p.last_ts)), '') AS last_trade
+        FROM positions p
+        LEFT JOIN latest_prices lp ON p.asset_id = lp.asset_id
+        GROUP BY p.trader
         ORDER BY {sort_expr} {order}
         LIMIT ? OFFSET ?"
     );
 
-    let traders = client
+    let traders = state
+        .db
         .query(&query)
         .bind(limit)
         .bind(offset)
@@ -77,8 +106,11 @@ pub async fn leaderboard(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let total: u64 = client
-        .query(&format!("SELECT uniqExact(trader) FROM poly_dearboard.trades WHERE trader NOT IN ({exclude})"))
+    let total: u64 = state
+        .db
+        .query(&format!(
+            "SELECT uniqExact(trader) FROM poly_dearboard.trades WHERE trader NOT IN ({exclude})"
+        ))
         .fetch_one()
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -92,25 +124,46 @@ pub async fn leaderboard(
 }
 
 pub async fn trader_stats(
-    State(client): State<clickhouse::Client>,
+    State(state): State<AppState>,
     Path(address): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let address = address.to_lowercase();
 
-    let result = client
+    let result = state
+        .db
         .query(
-            "SELECT
-                toString(trader) AS address,
-                toString(sum(usdc_amount)) AS total_volume,
-                count() AS trade_count,
-                uniqExact(asset_id) AS markets_traded,
-                toString(sumIf(usdc_amount, side = 'sell') - sumIf(usdc_amount, side = 'buy')) AS realized_pnl,
-                toString(sum(fee)) AS total_fees,
-                ifNull(toString(min(block_timestamp)), '') AS first_trade,
-                ifNull(toString(max(block_timestamp)), '') AS last_trade
-            FROM poly_dearboard.trades
-            WHERE lower(trader) = ?
-            GROUP BY trader",
+            "WITH
+                latest_prices AS (
+                    SELECT asset_id,
+                           argMax(price, block_number * 1000000 + log_index) AS latest_price
+                    FROM poly_dearboard.trades
+                    GROUP BY asset_id
+                ),
+                positions AS (
+                    SELECT trader, asset_id,
+                           sumIf(amount, side = 'buy') - sumIf(amount, side = 'sell') AS net_tokens,
+                           sumIf(usdc_amount, side = 'sell') - sumIf(usdc_amount, side = 'buy') AS cash_flow,
+                           sum(usdc_amount) AS volume,
+                           count() AS trades,
+                           sum(fee) AS fees,
+                           min(block_timestamp) AS first_ts,
+                           max(block_timestamp) AS last_ts
+                    FROM poly_dearboard.trades
+                    WHERE lower(trader) = ?
+                    GROUP BY trader, asset_id
+                )
+            SELECT
+                toString(p.trader) AS address,
+                toString(sum(p.volume)) AS total_volume,
+                sum(p.trades) AS trade_count,
+                count() AS markets_traded,
+                toString(ROUND(sum(p.cash_flow + p.net_tokens * lp.latest_price), 6)) AS realized_pnl,
+                toString(sum(p.fees)) AS total_fees,
+                ifNull(toString(min(p.first_ts)), '') AS first_trade,
+                ifNull(toString(max(p.last_ts)), '') AS last_trade
+            FROM positions p
+            LEFT JOIN latest_prices lp ON p.asset_id = lp.asset_id
+            GROUP BY p.trader",
         )
         .bind(&address)
         .fetch_optional::<TraderSummary>()
@@ -124,7 +177,7 @@ pub async fn trader_stats(
 }
 
 pub async fn trader_trades(
-    State(client): State<clickhouse::Client>,
+    State(state): State<AppState>,
     Path(address): Path<String>,
     Query(params): Query<TradesParams>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
@@ -140,7 +193,8 @@ pub async fn trader_trades(
         ));
     }
 
-    let trades = client
+    let trades = state
+        .db
         .query(
             "SELECT
                 toString(tx_hash) AS tx_hash,
@@ -168,7 +222,8 @@ pub async fn trader_trades(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let total: u64 = client
+    let total: u64 = state
+        .db
         .query(
             "SELECT count() FROM poly_dearboard.trades WHERE lower(trader) = ? AND (side = ? OR ? = '')",
         )
@@ -187,12 +242,215 @@ pub async fn trader_trades(
     }))
 }
 
-pub async fn health(
-    State(client): State<clickhouse::Client>,
+pub async fn hot_markets(
+    State(state): State<AppState>,
+    Query(params): Query<HotMarketsParams>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let exclude = EXCHANGE_CONTRACTS.iter().map(|a| format!("'{a}'")).collect::<Vec<_>>().join(",");
+    let limit = params.limit.unwrap_or(20).min(100);
+    let interval = match params.period.as_deref().unwrap_or("24h") {
+        "1h" => "1 HOUR",
+        "7d" => "7 DAY",
+        _ => "24 HOUR",
+    };
 
-    let stats = client
+    let exclude = exclude_clause();
+
+    let query = format!(
+        "SELECT
+            asset_id,
+            toString(sum(usdc_amount)) AS volume,
+            count() AS trade_count,
+            uniqExact(trader) AS unique_traders,
+            toString(argMax(price, block_number * 1000000 + log_index)) AS last_price,
+            ifNull(toString(max(block_timestamp)), '') AS last_trade
+        FROM poly_dearboard.trades
+        WHERE block_timestamp >= now() - INTERVAL {interval}
+          AND trader NOT IN ({exclude})
+        GROUP BY asset_id
+        ORDER BY sum(usdc_amount) DESC
+        LIMIT ?"
+    );
+
+    // Fetch extra rows since Yes/No tokens will be merged into one event
+    let fetch_limit = limit * 3;
+
+    let rows = state
+        .db
+        .query(&query)
+        .bind(fetch_limit)
+        .fetch_all::<MarketStatsRow>()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let token_ids: Vec<String> = rows.iter().map(|r| r.asset_id.clone()).collect();
+    let market_info =
+        markets::resolve_markets(&state.http, &state.market_cache, &token_ids).await;
+
+    // Merge tokens belonging to the same event (Yes/No → one row)
+    let mut merged: std::collections::HashMap<String, HotMarket> =
+        std::collections::HashMap::new();
+
+    for r in rows {
+        let info = market_info.get(&r.asset_id);
+        let question = info
+            .map(|i| i.question.clone())
+            .unwrap_or_else(|| shorten_id(&r.asset_id));
+        let vol: f64 = r.volume.parse().unwrap_or(0.0);
+
+        if let Some(existing) = merged.get_mut(&question) {
+            // Merge into existing event
+            let existing_vol: f64 = existing.volume.parse().unwrap_or(0.0);
+            existing.volume = format!("{}", existing_vol + vol);
+            existing.trade_count += r.trade_count;
+            existing.unique_traders += r.unique_traders;
+            existing.all_token_ids.push(r.asset_id.clone());
+            if r.last_trade > existing.last_trade {
+                existing.last_trade = r.last_trade;
+                existing.last_price = r.last_price;
+            }
+            // Keep the higher-volume token as the representative token_id
+            if vol > existing_vol {
+                existing.token_id = r.asset_id;
+            }
+        } else {
+            let asset_id = r.asset_id.clone();
+            merged.insert(
+                question.clone(),
+                HotMarket {
+                    token_id: r.asset_id,
+                    all_token_ids: vec![asset_id],
+                    question,
+                    outcome: String::new(),
+                    category: info.map(|i| i.category.clone()).unwrap_or_default(),
+                    volume: r.volume,
+                    trade_count: r.trade_count,
+                    unique_traders: r.unique_traders,
+                    last_price: r.last_price,
+                    last_trade: r.last_trade,
+                },
+            );
+        }
+    }
+
+    let mut markets: Vec<HotMarket> = merged.into_values().collect();
+    markets.sort_by(|a, b| {
+        let va: f64 = a.volume.parse().unwrap_or(0.0);
+        let vb: f64 = b.volume.parse().unwrap_or(0.0);
+        vb.partial_cmp(&va).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    markets.truncate(limit as usize);
+
+    Ok(Json(HotMarketsResponse { markets }))
+}
+
+pub async fn recent_trades(
+    State(state): State<AppState>,
+    Query(params): Query<LiveFeedParams>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let limit = params.limit.unwrap_or(50).min(200);
+    let exclude = exclude_clause();
+
+    // Support comma-separated token IDs for multi-outcome markets (Yes + No)
+    let token_ids: Vec<String> = params
+        .token_id
+        .as_deref()
+        .map(|s| {
+            s.split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let query = if token_ids.is_empty() {
+        format!(
+            "SELECT
+                toString(tx_hash) AS tx_hash,
+                ifNull(toString(block_timestamp), '') AS block_timestamp,
+                toString(trader) AS trader,
+                side,
+                asset_id,
+                toString(amount) AS amount,
+                toString(price) AS price,
+                toString(usdc_amount) AS usdc_amount
+            FROM poly_dearboard.trades
+            WHERE trader NOT IN ({exclude})
+            ORDER BY block_number DESC, log_index DESC
+            LIMIT ?"
+        )
+    } else {
+        let in_list = token_ids
+            .iter()
+            .map(|id| format!("'{}'", id.replace('\'', "''")))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "SELECT
+                toString(tx_hash) AS tx_hash,
+                ifNull(toString(block_timestamp), '') AS block_timestamp,
+                toString(trader) AS trader,
+                side,
+                asset_id,
+                toString(amount) AS amount,
+                toString(price) AS price,
+                toString(usdc_amount) AS usdc_amount
+            FROM poly_dearboard.trades
+            WHERE trader NOT IN ({exclude})
+              AND asset_id IN ({in_list})
+            ORDER BY block_number DESC, log_index DESC
+            LIMIT ?"
+        )
+    };
+
+    let rows = state
+        .db
+        .query(&query)
+        .bind(limit)
+        .fetch_all::<RecentTradeRow>()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let token_ids: Vec<String> = rows
+        .iter()
+        .map(|r| r.asset_id.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let market_info =
+        markets::resolve_markets(&state.http, &state.market_cache, &token_ids).await;
+
+    let trades = rows
+        .into_iter()
+        .map(|r| {
+            let info = market_info.get(&r.asset_id);
+            FeedTrade {
+                question: info
+                    .map(|i| i.question.clone())
+                    .unwrap_or_else(|| shorten_id(&r.asset_id)),
+                outcome: info.map(|i| i.outcome.clone()).unwrap_or_default(),
+                category: info.map(|i| i.category.clone()).unwrap_or_default(),
+                tx_hash: r.tx_hash,
+                block_timestamp: r.block_timestamp,
+                trader: r.trader,
+                side: r.side,
+                asset_id: r.asset_id,
+                amount: r.amount,
+                price: r.price,
+                usdc_amount: r.usdc_amount,
+            }
+        })
+        .collect();
+
+    Ok(Json(LiveFeedResponse { trades }))
+}
+
+pub async fn health(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let exclude = exclude_clause();
+
+    let stats = state
+        .db
         .query(&format!(
             "SELECT
                 count() AS trade_count,
@@ -211,4 +469,87 @@ pub async fn health(
         trader_count: stats.trader_count,
         latest_block: stats.latest_block,
     }))
+}
+
+pub async fn trader_positions(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let address = address.to_lowercase();
+
+    let rows = state
+        .db
+        .query(
+            "WITH latest_prices AS (
+                SELECT asset_id,
+                       argMax(price, block_number * 1000000 + log_index) AS latest_price
+                FROM poly_dearboard.trades
+                GROUP BY asset_id
+            )
+            SELECT
+                p.asset_id,
+                p.side_summary,
+                toString(p.net_tokens) AS net_tokens,
+                toString(p.cost_basis) AS cost_basis,
+                toString(lp.latest_price) AS latest_price,
+                toString(ROUND(p.cash_flow + p.net_tokens * lp.latest_price, 6)) AS pnl,
+                toString(p.volume) AS volume,
+                p.trades AS trade_count
+            FROM (
+                SELECT asset_id,
+                       sumIf(amount, side = 'buy') - sumIf(amount, side = 'sell') AS net_tokens,
+                       sumIf(usdc_amount, side = 'sell') - sumIf(usdc_amount, side = 'buy') AS cash_flow,
+                       if(sumIf(amount, side = 'buy') > 0,
+                          sumIf(usdc_amount, side = 'buy') / sumIf(amount, side = 'buy'),
+                          toDecimal128(0, 6)) AS cost_basis,
+                       if(sumIf(amount, side = 'buy') > sumIf(amount, side = 'sell'), 'long',
+                          if(sumIf(amount, side = 'sell') > sumIf(amount, side = 'buy'), 'short', 'closed')) AS side_summary,
+                       sum(usdc_amount) AS volume,
+                       count() AS trades
+                FROM poly_dearboard.trades
+                WHERE lower(trader) = ?
+                GROUP BY asset_id
+            ) p
+            LEFT JOIN latest_prices lp ON p.asset_id = lp.asset_id
+            ORDER BY abs(p.net_tokens * lp.latest_price) DESC",
+        )
+        .bind(&address)
+        .fetch_all::<PositionRow>()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let token_ids: Vec<String> = rows.iter().map(|r| r.asset_id.clone()).collect();
+    let market_info =
+        markets::resolve_markets(&state.http, &state.market_cache, &token_ids).await;
+
+    let positions = rows
+        .into_iter()
+        .map(|r| {
+            let info = market_info.get(&r.asset_id);
+            OpenPosition {
+                question: info
+                    .map(|i| i.question.clone())
+                    .unwrap_or_else(|| shorten_id(&r.asset_id)),
+                outcome: info.map(|i| i.outcome.clone()).unwrap_or_default(),
+                asset_id: r.asset_id,
+                side: r.side_summary,
+                net_tokens: r.net_tokens,
+                cost_basis: r.cost_basis,
+                latest_price: r.latest_price,
+                pnl: r.pnl,
+                volume: r.volume,
+                trade_count: r.trade_count,
+            }
+        })
+        .collect();
+
+    Ok(Json(PositionsResponse { positions }))
+}
+
+fn shorten_id(id: &str) -> String {
+    if id.len() <= 12 {
+        id.to_string()
+    } else {
+        format!("{}...{}", &id[..6], &id[id.len() - 4..])
+    }
 }

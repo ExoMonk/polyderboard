@@ -1,7 +1,14 @@
 use axum::{routing::get, Router};
 use tower_http::cors::{Any, CorsLayer};
 
-use super::routes;
+use super::{markets, routes};
+
+#[derive(Clone)]
+pub struct AppState {
+    pub db: clickhouse::Client,
+    pub http: reqwest::Client,
+    pub market_cache: markets::MarketCache,
+}
 
 pub async fn run(client: clickhouse::Client, port: u16) {
     let cors = CorsLayer::new()
@@ -9,13 +16,31 @@ pub async fn run(client: clickhouse::Client, port: u16) {
         .allow_methods(Any)
         .allow_headers(Any);
 
+    let state = AppState {
+        db: client,
+        http: reqwest::Client::new(),
+        market_cache: markets::new_cache(),
+    };
+
+    // Pre-warm the market name cache in the background
+    {
+        let http = state.http.clone();
+        let cache = state.market_cache.clone();
+        tokio::spawn(async move {
+            markets::warm_cache(&http, &cache).await;
+        });
+    }
+
     let app = Router::new()
         .route("/api/leaderboard", get(routes::leaderboard))
         .route("/api/trader/{address}", get(routes::trader_stats))
         .route("/api/trader/{address}/trades", get(routes::trader_trades))
+        .route("/api/trader/{address}/positions", get(routes::trader_positions))
+        .route("/api/markets/hot", get(routes::hot_markets))
+        .route("/api/trades/recent", get(routes::recent_trades))
         .route("/api/health", get(routes::health))
         .layer(cors)
-        .with_state(client);
+        .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
         .await

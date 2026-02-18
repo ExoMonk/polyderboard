@@ -72,3 +72,113 @@ pub struct TradesParams {
     pub offset: Option<u32>,
     pub side: Option<String>,
 }
+
+// -- Hot Markets --
+
+#[derive(Row, Deserialize)]
+pub struct MarketStatsRow {
+    pub asset_id: String,
+    pub volume: String,
+    pub trade_count: u64,
+    pub unique_traders: u64,
+    pub last_price: String,
+    pub last_trade: String,
+}
+
+#[derive(Serialize)]
+pub struct HotMarket {
+    pub token_id: String,
+    pub all_token_ids: Vec<String>,
+    pub question: String,
+    pub outcome: String,
+    pub category: String,
+    pub volume: String,
+    pub trade_count: u64,
+    pub unique_traders: u64,
+    pub last_price: String,
+    pub last_trade: String,
+}
+
+#[derive(Serialize)]
+pub struct HotMarketsResponse {
+    pub markets: Vec<HotMarket>,
+}
+
+#[derive(Deserialize)]
+pub struct HotMarketsParams {
+    pub period: Option<String>,
+    pub limit: Option<u32>,
+}
+
+// -- Live Feed --
+
+#[derive(Row, Deserialize)]
+pub struct RecentTradeRow {
+    pub tx_hash: String,
+    pub block_timestamp: String,
+    pub trader: String,
+    pub side: String,
+    pub asset_id: String,
+    pub amount: String,
+    pub price: String,
+    pub usdc_amount: String,
+}
+
+#[derive(Serialize)]
+pub struct FeedTrade {
+    pub tx_hash: String,
+    pub block_timestamp: String,
+    pub trader: String,
+    pub side: String,
+    pub asset_id: String,
+    pub amount: String,
+    pub price: String,
+    pub usdc_amount: String,
+    pub question: String,
+    pub outcome: String,
+    pub category: String,
+}
+
+#[derive(Serialize)]
+pub struct LiveFeedResponse {
+    pub trades: Vec<FeedTrade>,
+}
+
+#[derive(Deserialize)]
+pub struct LiveFeedParams {
+    pub limit: Option<u32>,
+    pub token_id: Option<String>,
+}
+
+// -- Trader Positions --
+
+#[derive(Row, Deserialize)]
+pub struct PositionRow {
+    pub asset_id: String,
+    pub side_summary: String,
+    pub net_tokens: String,
+    pub cost_basis: String,
+    pub latest_price: String,
+    pub pnl: String,
+    pub volume: String,
+    pub trade_count: u64,
+}
+
+#[derive(Serialize)]
+pub struct OpenPosition {
+    pub asset_id: String,
+    pub question: String,
+    pub outcome: String,
+    pub side: String,
+    pub net_tokens: String,
+    pub cost_basis: String,
+    pub latest_price: String,
+    pub pnl: String,
+    pub volume: String,
+    pub trade_count: u64,
+}
+
+#[derive(Serialize)]
+pub struct PositionsResponse {
+    pub positions: Vec<OpenPosition>,
+}
