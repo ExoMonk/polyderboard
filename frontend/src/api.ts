@@ -11,9 +11,10 @@ import type {
   SortColumn,
   SortOrder,
   Timeframe,
+  PnlTimeframe,
 } from "./types";
 
-const BASE = "/api";
+const BASE = import.meta.env.VITE_API_URL || "/api";
 
 export async function fetchLeaderboard(params: {
   sort?: SortColumn;
@@ -88,8 +89,10 @@ export async function fetchTraderPositions(address: string): Promise<PositionsRe
   return res.json();
 }
 
-export async function fetchPnlChart(address: string): Promise<PnlChartResponse> {
-  const res = await fetch(`${BASE}/trader/${address}/pnl-chart`);
+export async function fetchPnlChart(address: string, timeframe?: PnlTimeframe): Promise<PnlChartResponse> {
+  const sp = new URLSearchParams();
+  if (timeframe && timeframe !== "all") sp.set("timeframe", timeframe);
+  const res = await fetch(`${BASE}/trader/${address}/pnl-chart?${sp}`);
   if (!res.ok) throw new Error(`PnL chart fetch failed: ${res.status}`);
   return res.json();
 }

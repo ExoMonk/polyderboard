@@ -52,7 +52,9 @@ pub async fn leaderboard(
     }
 
     let sort_expr = match sort {
-        "realized_pnl" => "sum(p.cash_flow + p.net_tokens * lp.latest_price)",
+        "realized_pnl" => {
+            "sum(p.cash_flow + p.net_tokens * coalesce(rp.resolved_price, toFloat64(lp.latest_price)))"
+        }
         "total_volume" => "sum(p.volume)",
         "trade_count" => "sum(p.trades)",
         _ => unreachable!(),
@@ -74,6 +76,10 @@ pub async fn leaderboard(
                 FROM poly_dearboard.trades
                 GROUP BY asset_id
             ),
+            resolved AS (
+                SELECT asset_id, toNullable(toFloat64(resolved_price)) AS resolved_price
+                FROM poly_dearboard.resolved_prices FINAL
+            ),
             positions AS (
                 SELECT trader, asset_id,
                        sumIf(amount, side = 'buy') - sumIf(amount, side = 'sell') AS net_tokens,
@@ -92,12 +98,13 @@ pub async fn leaderboard(
             toString(sum(p.volume)) AS total_volume,
             sum(p.trades) AS trade_count,
             count() AS markets_traded,
-            toString(ROUND(sum(p.cash_flow + p.net_tokens * lp.latest_price), 6)) AS realized_pnl,
+            toString(ROUND(sum(p.cash_flow + p.net_tokens * coalesce(rp.resolved_price, toFloat64(lp.latest_price))), 6)) AS realized_pnl,
             toString(sum(p.fees)) AS total_fees,
             ifNull(toString(min(p.first_ts)), '') AS first_trade,
             ifNull(toString(max(p.last_ts)), '') AS last_trade
         FROM positions p
         LEFT JOIN latest_prices lp ON p.asset_id = lp.asset_id
+        LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
         GROUP BY p.trader
         ORDER BY {sort_expr} {order}
         LIMIT ? OFFSET ?"
@@ -145,6 +152,10 @@ pub async fn trader_stats(
                     FROM poly_dearboard.trades
                     GROUP BY asset_id
                 ),
+                resolved AS (
+                    SELECT asset_id, toNullable(toFloat64(resolved_price)) AS resolved_price
+                    FROM poly_dearboard.resolved_prices FINAL
+                ),
                 positions AS (
                     SELECT trader, asset_id,
                            sumIf(amount, side = 'buy') - sumIf(amount, side = 'sell') AS net_tokens,
@@ -163,12 +174,13 @@ pub async fn trader_stats(
                 toString(sum(p.volume)) AS total_volume,
                 sum(p.trades) AS trade_count,
                 count() AS markets_traded,
-                toString(ROUND(sum(p.cash_flow + p.net_tokens * lp.latest_price), 6)) AS realized_pnl,
+                toString(ROUND(sum(p.cash_flow + p.net_tokens * coalesce(rp.resolved_price, toFloat64(lp.latest_price))), 6)) AS realized_pnl,
                 toString(sum(p.fees)) AS total_fees,
                 ifNull(toString(min(p.first_ts)), '') AS first_trade,
                 ifNull(toString(max(p.last_ts)), '') AS last_trade
             FROM positions p
             LEFT JOIN latest_prices lp ON p.asset_id = lp.asset_id
+            LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
             GROUP BY p.trader",
         )
         .bind(&address)
@@ -524,21 +536,27 @@ pub async fn trader_positions(
     let rows = state
         .db
         .query(
-            "WITH latest_prices AS (
-                SELECT asset_id,
-                       argMax(price, block_number * 1000000 + log_index) AS latest_price
-                FROM poly_dearboard.trades
-                GROUP BY asset_id
-            )
+            "WITH
+                latest_prices AS (
+                    SELECT asset_id,
+                           argMax(price, block_number * 1000000 + log_index) AS latest_price
+                    FROM poly_dearboard.trades
+                    GROUP BY asset_id
+                ),
+                resolved AS (
+                    SELECT asset_id, toNullable(toFloat64(resolved_price)) AS resolved_price
+                    FROM poly_dearboard.resolved_prices FINAL
+                )
             SELECT
                 p.asset_id,
                 p.side_summary,
                 toString(p.net_tokens) AS net_tokens,
                 toString(p.cost_basis) AS cost_basis,
-                toString(lp.latest_price) AS latest_price,
-                toString(ROUND(p.cash_flow + p.net_tokens * lp.latest_price, 6)) AS pnl,
+                toString(coalesce(rp.resolved_price, toFloat64(lp.latest_price))) AS latest_price,
+                toString(ROUND(p.cash_flow + p.net_tokens * coalesce(rp.resolved_price, toFloat64(lp.latest_price)), 6)) AS pnl,
                 toString(p.volume) AS volume,
-                p.trades AS trade_count
+                p.trades AS trade_count,
+                if(rp.resolved_price IS NOT NULL, 1, 0) AS on_chain_resolved
             FROM (
                 SELECT asset_id,
                        sumIf(amount, side = 'buy') - sumIf(amount, side = 'sell') AS net_tokens,
@@ -555,7 +573,8 @@ pub async fn trader_positions(
                 GROUP BY asset_id
             ) p
             LEFT JOIN latest_prices lp ON p.asset_id = lp.asset_id
-            ORDER BY abs(p.net_tokens * lp.latest_price) DESC",
+            LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
+            ORDER BY abs(p.net_tokens * coalesce(rp.resolved_price, toFloat64(lp.latest_price))) DESC",
         )
         .bind(&address)
         .fetch_all::<PositionRow>()
@@ -570,6 +589,8 @@ pub async fn trader_positions(
     let mut closed = Vec::new();
 
     for r in rows {
+        // On-chain resolution is the strongest signal (from condition_resolution table)
+        let on_chain_resolved = r.on_chain_resolved == 1;
         let api_resolved = market_info
             .get(&r.asset_id)
             .map(|i| !i.active)
@@ -582,7 +603,7 @@ pub async fn trader_positions(
             .unwrap_or(false);
         // Trader fully exited (bought then sold everything)
         let user_exited = r.side_summary == "closed";
-        let settled = api_resolved || price_settled || user_exited;
+        let settled = on_chain_resolved || api_resolved || price_settled || user_exited;
 
         let info = market_info.get(&r.asset_id);
         let pos = OpenPosition {
@@ -615,40 +636,152 @@ pub async fn trader_positions(
 pub async fn pnl_chart(
     State(state): State<AppState>,
     Path(address): Path<String>,
+    Query(params): Query<PnlChartParams>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let address = address.to_lowercase();
+    let timeframe = params.timeframe.as_deref().unwrap_or("all");
 
-    // Daily cash flow: sells - buys. Running sum computed in Rust to avoid
-    // clickhouse crate issues with window functions in binary protocol.
+    // Granularity + window based on timeframe
+    let (bucket_expr, date_format, window_interval) = match timeframe {
+        "24h" => (
+            "toStartOfHour(block_timestamp)",
+            "ifNull(toString(toStartOfHour(block_timestamp)), '')",
+            Some("24 HOUR"),
+        ),
+        "7d" => (
+            "toDate(block_timestamp)",
+            "ifNull(toString(toDate(block_timestamp)), '')",
+            Some("7 DAY"),
+        ),
+        "30d" => (
+            "toDate(block_timestamp)",
+            "ifNull(toString(toDate(block_timestamp)), '')",
+            Some("30 DAY"),
+        ),
+        _ => (
+            "toDate(block_timestamp)",
+            "ifNull(toString(toDate(block_timestamp)), '')",
+            None,
+        ),
+    };
+
+    // For windowed views: compute initial portfolio state from trades before the window
+    let mut asset_state: std::collections::HashMap<String, (f64, f64, f64)> =
+        std::collections::HashMap::new();
+
+    if let Some(interval) = window_interval {
+        let initial = state
+            .db
+            .query(&format!(
+                "SELECT
+                    asset_id,
+                    toString(sumIf(toFloat64(amount), side='buy') - sumIf(toFloat64(amount), side='sell')) AS net_tokens,
+                    toString(sumIf(toFloat64(usdc_amount), side='sell') - sumIf(toFloat64(usdc_amount), side='buy')) AS cash_flow,
+                    toString(argMax(toFloat64(price), block_number * 1000000 + log_index)) AS last_price
+                FROM poly_dearboard.trades
+                WHERE lower(trader) = ?
+                  AND block_timestamp > toDateTime('1970-01-01 00:00:00')
+                  AND block_timestamp < now() - INTERVAL {interval}
+                GROUP BY asset_id"
+            ))
+            .bind(&address)
+            .fetch_all::<PnlInitialStateRow>()
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        for row in initial {
+            let tokens = row.net_tokens.parse::<f64>().unwrap_or(0.0);
+            let cash = row.cash_flow.parse::<f64>().unwrap_or(0.0);
+            let price = row.last_price.parse::<f64>().unwrap_or(0.0);
+            asset_state.insert(row.asset_id, (tokens, cash, price));
+        }
+    }
+
+    // Fetch per-(bucket, asset) trade summaries within the window
+    let window_filter = window_interval
+        .map(|i| format!("AND block_timestamp >= now() - INTERVAL {i}"))
+        .unwrap_or_default();
+
     let rows = state
         .db
-        .query(
+        .query(&format!(
             "SELECT
-                ifNull(toString(toDate(block_timestamp)), '') AS date,
-                toString(ROUND(sum(if(side = 'sell', toFloat64(usdc_amount), -toFloat64(usdc_amount))), 2)) AS pnl
+                {date_format} AS date,
+                asset_id,
+                toString(sumIf(toFloat64(amount), side = 'buy') - sumIf(toFloat64(amount), side = 'sell')) AS net_token_delta,
+                toString(sumIf(toFloat64(usdc_amount), side = 'sell') - sumIf(toFloat64(usdc_amount), side = 'buy')) AS cash_flow_delta,
+                toString(argMax(toFloat64(price), block_number * 1000000 + log_index)) AS last_price
             FROM poly_dearboard.trades
             WHERE lower(trader) = ?
               AND block_timestamp > toDateTime('1970-01-01 00:00:00')
-            GROUP BY toDate(block_timestamp)
-            ORDER BY toDate(block_timestamp)",
-        )
+              {window_filter}
+            GROUP BY {bucket_expr}, asset_id
+            ORDER BY {bucket_expr}, asset_id"
+        ))
         .bind(&address)
-        .fetch_all::<PnlChartRow>()
+        .fetch_all::<PnlDailyRow>()
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    // Cumulative sum
-    let mut cumulative = 0.0;
-    let points = rows
+    if rows.is_empty() && asset_state.is_empty() {
+        return Ok(Json(PnlChartResponse { points: vec![] }));
+    }
+
+    // Resolved prices for final-point overlay (matches leaderboard COALESCE logic)
+    let resolved: std::collections::HashMap<String, f64> = state
+        .db
+        .query("SELECT asset_id, resolved_price FROM poly_dearboard.resolved_prices FINAL")
+        .fetch_all::<ResolvedPriceLookup>()
+        .await
+        .unwrap_or_default()
         .into_iter()
-        .map(|r| {
-            cumulative += r.pnl.parse::<f64>().unwrap_or(0.0);
-            PnlChartPoint {
-                date: r.date,
-                pnl: format!("{:.2}", cumulative),
-            }
-        })
+        .filter_map(|r| r.resolved_price.parse::<f64>().ok().map(|p| (r.asset_id, p)))
         .collect();
+
+    // Process bucket-by-bucket, maintaining per-asset running state:
+    // (cumulative_net_tokens, cumulative_cash_flow, last_known_price)
+    let mut points: Vec<PnlChartPoint> = Vec::new();
+    let mut current_date = String::new();
+
+    for row in &rows {
+        if !current_date.is_empty() && row.date != current_date {
+            let pnl: f64 = asset_state
+                .values()
+                .map(|(tokens, cash, price)| cash + tokens * price)
+                .sum();
+            points.push(PnlChartPoint {
+                date: current_date.clone(),
+                pnl: format!("{:.2}", pnl),
+            });
+        }
+        current_date.clone_from(&row.date);
+
+        let delta_tokens = row.net_token_delta.parse::<f64>().unwrap_or(0.0);
+        let delta_cash = row.cash_flow_delta.parse::<f64>().unwrap_or(0.0);
+        let price = row.last_price.parse::<f64>().unwrap_or(0.0);
+
+        let entry = asset_state
+            .entry(row.asset_id.clone())
+            .or_insert((0.0, 0.0, 0.0));
+        entry.0 += delta_tokens;
+        entry.1 += delta_cash;
+        entry.2 = price;
+    }
+
+    // Final point: use resolved prices where available (COALESCE equivalent)
+    if !current_date.is_empty() {
+        let pnl: f64 = asset_state
+            .iter()
+            .map(|(asset_id, (tokens, cash, price))| {
+                let final_price = resolved.get(asset_id).copied().unwrap_or(*price);
+                cash + tokens * final_price
+            })
+            .sum();
+        points.push(PnlChartPoint {
+            date: current_date,
+            pnl: format!("{:.2}", pnl),
+        });
+    }
 
     Ok(Json(PnlChartResponse { points }))
 }

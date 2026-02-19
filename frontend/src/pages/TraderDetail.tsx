@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { fetchTrader, fetchTraderTrades, fetchTraderPositions, fetchPnlChart } from "../api";
-import type { OpenPosition } from "../types";
+import type { OpenPosition, PnlTimeframe } from "../types";
 import Spinner from "../components/Spinner";
 import Pagination from "../components/Pagination";
 import PnlChart from "../charts/PnlChart";
@@ -16,6 +16,7 @@ export default function TraderDetail() {
   const [sideFilter, setSideFilter] = useState("");
   const [offset, setOffset] = useState(0);
   const [posTab, setPosTab] = useState<PosTab>("open");
+  const [pnlTimeframe, setPnlTimeframe] = useState<PnlTimeframe>("all");
 
   const { data: trader, isLoading: loadingTrader, error: traderError } = useQuery({
     queryKey: ["trader", address],
@@ -37,8 +38,8 @@ export default function TraderDetail() {
   });
 
   const { data: pnlChart } = useQuery({
-    queryKey: ["pnlChart", address],
-    queryFn: () => fetchPnlChart(address!),
+    queryKey: ["pnlChart", address, pnlTimeframe],
+    queryFn: () => fetchPnlChart(address!, pnlTimeframe),
     enabled: !!address,
   });
 
@@ -95,8 +96,14 @@ export default function TraderDetail() {
         <StatCard label="Active Since" value={formatDate(trader.first_trade)} />
       </div>
 
-      {/* Cumulative PnL Chart */}
-      {pnlChart && pnlChart.points.length > 0 && <PnlChart points={pnlChart.points} />}
+      {/* PnL Chart */}
+      {pnlChart && (
+        <PnlChart
+          points={pnlChart.points}
+          timeframe={pnlTimeframe}
+          onTimeframeChange={setPnlTimeframe}
+        />
+      )}
 
       {/* Positions */}
       {positionsData && (positionsData.open.length > 0 || positionsData.closed.length > 0) && (

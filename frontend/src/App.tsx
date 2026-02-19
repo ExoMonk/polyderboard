@@ -4,6 +4,7 @@ import Dashboard from "./pages/Dashboard";
 import TraderDetail from "./pages/TraderDetail";
 import Activity from "./pages/Activity";
 import MarketDetail from "./pages/MarketDetail";
+import Alerts from "./pages/Alerts";
 
 export default function App() {
   return (
@@ -13,6 +14,7 @@ export default function App() {
         <Route path="/trader/:address" element={<TraderDetail />} />
         <Route path="/activity" element={<Activity />} />
         <Route path="/market/:tokenId" element={<MarketDetail />} />
+        <Route path="/alerts" element={<Alerts />} />
       </Routes>
     </Layout>
   );

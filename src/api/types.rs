@@ -163,6 +163,7 @@ pub struct PositionRow {
     pub pnl: String,
     pub volume: String,
     pub trade_count: u64,
+    pub on_chain_resolved: u8,
 }
 
 #[derive(Serialize)]
@@ -187,10 +188,35 @@ pub struct PositionsResponse {
 
 // -- PnL Chart --
 
+#[derive(Deserialize)]
+pub struct PnlChartParams {
+    pub timeframe: Option<String>,
+}
+
+/// Per-(bucket, asset) trade summary for mark-to-market PnL computation
 #[derive(Row, Deserialize)]
-pub struct PnlChartRow {
+pub struct PnlDailyRow {
     pub date: String,
-    pub pnl: String,
+    pub asset_id: String,
+    pub net_token_delta: String,
+    pub cash_flow_delta: String,
+    pub last_price: String,
+}
+
+/// Pre-window portfolio state per asset (for windowed timeframes)
+#[derive(Row, Deserialize)]
+pub struct PnlInitialStateRow {
+    pub asset_id: String,
+    pub net_tokens: String,
+    pub cash_flow: String,
+    pub last_price: String,
+}
+
+/// Lightweight read type for resolved_prices lookups
+#[derive(Row, Deserialize)]
+pub struct ResolvedPriceLookup {
+    pub asset_id: String,
+    pub resolved_price: String,
 }
 
 #[derive(Serialize)]
@@ -202,6 +228,23 @@ pub struct PnlChartPoint {
 #[derive(Serialize)]
 pub struct PnlChartResponse {
     pub points: Vec<PnlChartPoint>,
+}
+
+// -- Condition Resolution (on-chain) --
+
+#[derive(Row, Deserialize)]
+pub struct ConditionResolutionRow {
+    pub condition_id: String,
+    pub payout_numerators: Vec<String>,
+    pub block_number: u64,
+}
+
+#[derive(Row, Serialize)]
+pub struct ResolvedPriceRow {
+    pub asset_id: String,
+    pub resolved_price: String,
+    pub condition_id: String,
+    pub block_number: u64,
 }
 
 // -- On-demand market resolve --

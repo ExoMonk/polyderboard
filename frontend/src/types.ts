@@ -46,6 +46,7 @@ export interface HealthResponse {
 export type SortColumn = "realized_pnl" | "total_volume" | "trade_count";
 export type SortOrder = "asc" | "desc";
 export type Timeframe = "1h" | "24h" | "all";
+export type PnlTimeframe = "24h" | "7d" | "30d" | "all";
 
 export interface HotMarket {
   token_id: string;
@@ -116,3 +117,34 @@ export interface ResolvedMarket {
   active: boolean;
   gamma_token_id: string;
 }
+
+// Alerts (WebSocket)
+
+export interface WhaleTradeAlert {
+  kind: "WhaleTrade";
+  timestamp: string;
+  exchange: string;
+  side: string;
+  trader: string;
+  asset_id: string;
+  usdc_amount: string;
+  token_amount: string;
+  tx_hash: string;
+  block_number: number;
+  question?: string;
+  outcome?: string;
+}
+
+export interface MarketResolutionAlert {
+  kind: "MarketResolution";
+  timestamp: string;
+  condition_id: string;
+  oracle: string;
+  question_id: string;
+  payout_numerators: string[];
+  tx_hash: string;
+  block_number: number;
+  question?: string;
+}
+
+export type Alert = WhaleTradeAlert | MarketResolutionAlert;

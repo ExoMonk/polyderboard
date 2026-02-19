@@ -32,6 +32,9 @@ export default function Layout({ children }: { children: ReactNode }) {
             <Link to="/activity" className={`transition-colors duration-200 ${pathname === "/activity" ? "text-[var(--accent-cyan)] font-semibold" : "text-[var(--text-secondary)] hover:text-[var(--accent-cyan)]"}`}>
               Activity
             </Link>
+            <Link to="/alerts" className={`transition-colors duration-200 ${pathname === "/alerts" ? "text-[var(--accent-cyan)] font-semibold" : "text-[var(--text-secondary)] hover:text-[var(--accent-cyan)]"}`}>
+              Alerts
+            </Link>
           </nav>
         </div>
       </header>

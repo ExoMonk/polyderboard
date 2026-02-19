@@ -12,6 +12,10 @@ pub struct MarketInfo {
     pub active: bool,
     /// Full-precision token ID from Gamma API (for lookups that need the exact uint256)
     pub gamma_token_id: String,
+    /// CTF condition ID from Gamma API — links to condition_resolution table
+    pub condition_id: Option<String>,
+    /// Index of this token within the market's clobTokenIds array (maps to payout_numerators)
+    pub outcome_index: usize,
 }
 
 /// Cache keyed by the first 15 significant digits of the token ID.
@@ -64,7 +68,7 @@ fn significant_digits(id: &str) -> String {
 }
 
 /// Build a cache key: first 15 significant digits.
-fn cache_key(token_id: &str) -> String {
+pub(crate) fn cache_key(token_id: &str) -> String {
     let sig = significant_digits(token_id);
     if sig.len() >= PREFIX_LEN {
         sig[..PREFIX_LEN].to_string()
@@ -152,6 +156,8 @@ pub async fn warm_cache(http: &reqwest::Client, db: &clickhouse::Client, cache: 
                                     category: category.clone(),
                                     active,
                                     gamma_token_id: id.clone(),
+                                    condition_id: market.condition_id.clone(),
+                                    outcome_index: i,
                                 },
                             );
                             covered.insert(key);
@@ -191,6 +197,131 @@ pub async fn warm_cache(http: &reqwest::Client, db: &clickhouse::Client, cache: 
 #[derive(clickhouse::Row, serde::Deserialize)]
 struct AssetIdRow {
     asset_id: String,
+}
+
+/// Cross-reference the warm cache with on-chain ConditionResolution events,
+/// compute exact resolved prices, and write them to the resolved_prices table.
+pub async fn populate_resolved_prices(db: &clickhouse::Client, cache: &MarketCache) {
+    use super::types::{ConditionResolutionRow, ResolvedPriceRow};
+
+    // 1. Query all condition resolutions from ClickHouse
+    let resolutions: Vec<ConditionResolutionRow> = match db
+        .query(
+            "SELECT condition_id, payout_numerators, block_number
+             FROM poly_dearboard_conditional_tokens.condition_resolution",
+        )
+        .fetch_all()
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!("Failed to query condition_resolution: {e}");
+            return;
+        }
+    };
+
+    if resolutions.is_empty() {
+        tracing::info!("No condition resolutions found, skipping resolved prices");
+        return;
+    }
+
+    // 2. Build condition_id → (payout_numerators, block_number) map
+    let resolution_map: HashMap<String, (&Vec<String>, u64)> = resolutions
+        .iter()
+        .map(|r| (r.condition_id.clone(), (&r.payout_numerators, r.block_number)))
+        .collect();
+
+    tracing::info!(
+        "Found {} on-chain condition resolutions",
+        resolution_map.len()
+    );
+
+    // 3. Query distinct ClickHouse asset_ids
+    let ch_assets: Vec<AssetIdRow> = match db
+        .query("SELECT DISTINCT asset_id FROM poly_dearboard.trades")
+        .fetch_all()
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!("Failed to query asset_ids for resolved prices: {e}");
+            return;
+        }
+    };
+
+    // 4. For each CH asset_id, look up cache entry → check resolution → compute price
+    let cache_read = cache.read().await;
+    let mut rows: Vec<ResolvedPriceRow> = Vec::new();
+
+    for asset in &ch_assets {
+        let key = cache_key(&asset.asset_id);
+        let info = match cache_read.get(&key) {
+            Some(i) => i,
+            None => continue,
+        };
+        let cid = match &info.condition_id {
+            Some(c) => c,
+            None => continue,
+        };
+        let (numerators, block) = match resolution_map.get(cid.as_str()) {
+            Some(r) => r,
+            None => continue, // Not resolved on-chain
+        };
+
+        // resolved_price = numerators[outcome_index] / sum(numerators)
+        let nums: Vec<f64> = numerators.iter().filter_map(|s| s.parse().ok()).collect();
+        let total: f64 = nums.iter().sum();
+        if total <= 0.0 || info.outcome_index >= nums.len() {
+            continue;
+        }
+        let price = nums[info.outcome_index] / total;
+
+        rows.push(ResolvedPriceRow {
+            asset_id: asset.asset_id.clone(),
+            resolved_price: format!("{:.6}", price),
+            condition_id: cid.clone(),
+            block_number: *block,
+        });
+    }
+
+    drop(cache_read);
+
+    if rows.is_empty() {
+        tracing::info!("No resolved prices to populate (no cache↔resolution overlap)");
+        return;
+    }
+
+    // 5. Truncate + batch INSERT
+    if let Err(e) = db
+        .query("TRUNCATE TABLE IF EXISTS poly_dearboard.resolved_prices")
+        .execute()
+        .await
+    {
+        tracing::warn!("Failed to truncate resolved_prices: {e}");
+    }
+
+    let mut inserter = match db.insert("poly_dearboard.resolved_prices") {
+        Ok(i) => i,
+        Err(e) => {
+            tracing::warn!("Failed to create inserter for resolved_prices: {e}");
+            return;
+        }
+    };
+
+    let count = rows.len();
+    for row in rows {
+        if let Err(e) = inserter.write(&row).await {
+            tracing::warn!("Failed to write resolved_price row: {e}");
+            return;
+        }
+    }
+
+    if let Err(e) = inserter.end().await {
+        tracing::warn!("Failed to flush resolved_prices: {e}");
+        return;
+    }
+
+    tracing::info!("Populated {count} resolved prices from on-chain data");
 }
 
 /// Resolve token IDs to market info.
@@ -278,9 +409,10 @@ async fn fetch_market_info(http: &reqwest::Client, token_id: &str) -> Option<Mar
     let ids = market.parsed_token_ids();
     let outcomes = market.parsed_outcomes();
     // Match by prefix since the lookup_id may be lossy
-    let outcome = ids
+    let matched_idx = ids
         .iter()
-        .position(|id| id == &lookup_id || cache_key(id) == cache_key(token_id))
+        .position(|id| id == &lookup_id || cache_key(id) == cache_key(token_id));
+    let outcome = matched_idx
         .and_then(|idx| outcomes.get(idx).cloned())
         .unwrap_or_default();
 
@@ -297,6 +429,8 @@ async fn fetch_market_info(http: &reqwest::Client, token_id: &str) -> Option<Mar
         category: String::new(),
         active,
         gamma_token_id,
+        condition_id: market.condition_id,
+        outcome_index: matched_idx.unwrap_or(0),
     })
 }
 
@@ -336,6 +470,8 @@ struct GammaMarket {
     active: Option<bool>,
     #[serde(default)]
     closed: Option<bool>,
+    /// CTF condition ID — links to on-chain ConditionResolution events
+    condition_id: Option<String>,
 }
 
 impl GammaMarket {
