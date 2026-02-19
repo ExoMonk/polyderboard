@@ -12,12 +12,13 @@ SCP_CMD="scp -i $SSH_KEY -o StrictHostKeyChecking=no"
 
 echo "Syncing config files to $VPS_HOST..."
 
-# Ensure remote directory structure exists
-$SSH_CMD "mkdir -p $REMOTE_DIR/deployments/polyderboard-prod $REMOTE_DIR/indexer/clickhouse $REMOTE_DIR/indexer/abi"
+# Ensure remote directory structure exists (needs sudo for /opt, then chown to user)
+$SSH_CMD "sudo mkdir -p $REMOTE_DIR/deployments/polyderboard-prod $REMOTE_DIR/indexer/clickhouse $REMOTE_DIR/indexer/abi && sudo chown -R $VPS_USER:$VPS_USER $REMOTE_DIR"
 
 # Sync compose + config files
 $SCP_CMD "$ROOT/deployments/polyderboard-prod/docker-compose.prod.yml" \
          "$ROOT/deployments/polyderboard-prod/Caddyfile" \
+         "$ROOT/deployments/polyderboard-prod/.env.prod" \
          "$VPS_USER@$VPS_HOST:$REMOTE_DIR/deployments/polyderboard-prod/"
 
 $SCP_CMD "$ROOT/indexer/erpc_conf.yaml" \
