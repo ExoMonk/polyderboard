@@ -923,6 +923,12 @@ pub async fn smart_money(
 
     for r in rows {
         let info = market_info.get(&r.asset_id);
+
+        // Skip resolved/inactive markets (API knows before on-chain settlement)
+        if info.map(|i| !i.active).unwrap_or(false) {
+            continue;
+        }
+
         let question = info
             .map(|i| i.question.clone())
             .unwrap_or_else(|| shorten_id(&r.asset_id));
