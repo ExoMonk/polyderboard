@@ -5,26 +5,17 @@
 On-chain Polymarket leaderboard built from ground-truth trade data.
 Indexes `OrderFilled` events directly from the CTF Exchange and NegRisk Exchange contracts on Polygon — no reliance on Polymarket's API for trade data.
 
-![Leaderboard](assets/leaderboard.png)
-
 ## Features
 
 **Leaderboard** — Rank traders by mark-to-market PnL, volume, or trade count. Scatter chart visualizes efficiency (Return on Volume %) vs performance.
 
 **Trader Detail** — Per-trader stats, open positions valued at live market prices, trade activity chart, and full trade history.
 
-<p align="center">
-  <img src="assets/trader_1.png" width="49%" />
-  <img src="assets/trader_2.png" width="49%" />
-</p>
-
 **Hot Markets** — Most active markets by volume (1h / 24h / 7d) with category tags and trader counts.
-
-![Hot Markets](assets/hot-market.png)
 
 **Market Live Feed** — Per-market real-time trade feed with Yes/No outcome display and price bars.
 
-![Live Feed](assets/live-feed.png)
+**Alerting system** — Real-time onchain alerting on whale trades, resolutions and reverted settlments
 
 ## Stack
 
