@@ -1,20 +1,28 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { Alert } from "../types";
+import type { FeedTrade } from "../types";
 
-const MAX_ALERTS = 100;
+const MAX_TRADES = 200;
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 
-export default function useAlerts() {
-  const [alerts, setAlerts] = useState<Alert[]>([]);
+interface Params {
+  tokenIds: string;
+}
+
+export default function useTradeWs({ tokenIds }: Params) {
+  const [liveTrades, setLiveTrades] = useState<FeedTrade[]>([]);
   const [connected, setConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const retryRef = useRef(0);
 
   const connect = useCallback(() => {
+    if (!tokenIds) return;
+
     const base = import.meta.env.VITE_API_URL || "";
-    const wsBase = base ? base.replace(/^http/, "ws") : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
-    const url = `${wsBase}/ws/alerts`;
+    const wsBase = base
+      ? base.replace(/^http/, "ws")
+      : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
+    const url = `${wsBase}/ws/trades?token_ids=${encodeURIComponent(tokenIds)}`;
 
     const ws = new WebSocket(url);
     wsRef.current = ws;
@@ -26,11 +34,10 @@ export default function useAlerts() {
 
     ws.onmessage = (event) => {
       try {
-        const alert: Alert = JSON.parse(event.data);
-        setAlerts((prev) => {
-          // Dedup by tx_hash — rindexer may fire the same event twice
-          if (prev.some((a) => a.tx_hash === alert.tx_hash)) return prev;
-          return [alert, ...prev].slice(0, MAX_ALERTS);
+        const trade: FeedTrade = JSON.parse(event.data);
+        setLiveTrades((prev) => {
+          if (prev.some((t) => t.tx_hash === trade.tx_hash)) return prev;
+          return [trade, ...prev].slice(0, MAX_TRADES);
         });
       } catch {
         // Ignore malformed messages
@@ -40,7 +47,6 @@ export default function useAlerts() {
     ws.onclose = () => {
       setConnected(false);
       wsRef.current = null;
-      // Exponential backoff reconnect
       const delay = Math.min(
         RECONNECT_BASE_MS * Math.pow(2, retryRef.current),
         RECONNECT_MAX_MS,
@@ -52,7 +58,7 @@ export default function useAlerts() {
     ws.onerror = () => {
       ws.close();
     };
-  }, []);
+  }, [tokenIds]);
 
   useEffect(() => {
     connect();
@@ -61,5 +67,5 @@ export default function useAlerts() {
     };
   }, [connect]);
 
-  return { alerts, connected };
+  return { liveTrades, connected };
 }

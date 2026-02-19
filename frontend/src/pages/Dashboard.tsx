@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
+import { motion } from "motion/react";
 import { fetchLeaderboard } from "../api";
 import type { SortColumn, SortOrder, Timeframe } from "../types";
 import Spinner from "../components/Spinner";
@@ -8,6 +9,7 @@ import AddressCell from "../components/AddressCell";
 import SortHeader from "../components/SortHeader";
 import PnlDistribution from "../charts/PnlDistribution";
 import { formatUsd, formatNumber, formatDate, timeAgo } from "../lib/format";
+import { tapScale } from "../lib/motion";
 
 const PAGE_SIZE = 25;
 
@@ -55,20 +57,21 @@ export default function Dashboard() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <h1 className="text-3xl font-black gradient-text tracking-tight">Leaderboard</h1>
+          <h1 className="text-3xl font-black gradient-text tracking-tight glitch-text">Leaderboard</h1>
           <div className="flex gap-1">
             {TIMEFRAMES.map((tf) => (
-              <button
+              <motion.button
                 key={tf.value}
                 onClick={() => { setTimeframe(tf.value); setOffset(0); }}
+                whileTap={tapScale}
                 className={`px-4 py-1.5 text-xs rounded-full font-medium transition-all duration-200 ${
                   timeframe === tf.value
-                    ? "bg-[var(--accent-cyan)]/10 text-[var(--accent-cyan)] border border-[var(--accent-cyan)]/30 shadow-[0_0_8px_rgba(34,211,238,0.15)]"
+                    ? "bg-[var(--accent-blue)]/10 text-[var(--accent-blue)] border border-[var(--accent-blue)]/30 shadow-[0_0_8px_rgba(59,130,246,0.15)]"
                     : "text-[var(--text-secondary)] border border-transparent hover:text-[var(--text-primary)] hover:border-[var(--border-glow)]"
                 }`}
               >
                 {tf.label}
-              </button>
+              </motion.button>
             ))}
           </div>
         </div>
@@ -99,7 +102,13 @@ export default function Dashboard() {
                 const rank = offset + i + 1;
                 const pnl = parseFloat(t.realized_pnl);
                 return (
-                  <tr key={t.address} className="border-b border-[var(--border-subtle)] row-glow">
+                  <motion.tr
+                    key={t.address}
+                    initial={{ opacity: 0, x: -8 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ duration: 0.25, delay: i * 0.03 }}
+                    className="border-b border-[var(--border-subtle)] row-glow"
+                  >
                     <td className={`px-4 py-3 font-mono text-sm ${rankClass(rank)}`}>{rank}</td>
                     <td className="px-4 py-3">
                       <AddressCell address={t.address} />
@@ -112,7 +121,7 @@ export default function Dashboard() {
                     <td className="px-4 py-3 text-right text-[var(--text-secondary)]">{formatNumber(t.markets_traded)}</td>
                     <td className="px-4 py-3 text-right text-[var(--text-secondary)] hidden lg:table-cell">{formatDate(t.first_trade)}</td>
                     <td className="px-4 py-3 text-right text-[var(--text-secondary)] hidden lg:table-cell">{timeAgo(t.last_trade)}</td>
-                  </tr>
+                  </motion.tr>
                 );
               })}
             </tbody>

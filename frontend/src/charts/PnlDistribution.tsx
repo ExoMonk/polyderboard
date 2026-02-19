@@ -1,14 +1,16 @@
 import { ScatterChart, Scatter, XAxis, YAxis, ZAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from "recharts";
+import { motion } from "motion/react";
 import type { TraderSummary } from "../types";
 import { shortenAddress, formatUsd } from "../lib/format";
+import { panelVariants } from "../lib/motion";
 
 interface Props {
   traders: TraderSummary[];
 }
 
 const TOOLTIP_STYLE = {
-  backgroundColor: "rgba(12, 12, 30, 0.95)",
-  border: "1px solid rgba(6, 182, 212, 0.2)",
+  backgroundColor: "rgba(10, 18, 40, 0.95)",
+  border: "1px solid rgba(59, 130, 246, 0.2)",
   borderRadius: 8,
   fontSize: 12,
   boxShadow: "0 4px 20px rgba(0, 0, 0, 0.5)",
@@ -54,7 +56,7 @@ function CustomTooltip({ active, payload }: { active?: boolean; payload?: Array<
   const d = payload[0].payload;
   return (
     <div style={TOOLTIP_STYLE}>
-      <div style={{ color: "var(--accent-cyan)", fontFamily: "monospace", marginBottom: 6 }}>{d.name}</div>
+      <div style={{ color: "var(--accent-blue)", fontFamily: "monospace", marginBottom: 6 }}>{d.name}</div>
       <div style={{ display: "grid", gridTemplateColumns: "auto auto", gap: "2px 12px", fontSize: 12 }}>
         <span style={{ color: "var(--text-secondary)" }}>PnL</span>
         <span style={{ color: d.positive ? "var(--neon-green)" : "var(--neon-red)", fontFamily: "monospace" }}>
@@ -76,7 +78,13 @@ export default function PnlDistribution({ traders }: Props) {
   const maxTrades = Math.max(...traders.map((t) => t.trade_count), 1);
 
   return (
-    <div className="glass p-5 gradient-border-top shimmer-border">
+    <motion.div
+      variants={panelVariants}
+      initial="initial"
+      animate="animate"
+      transition={{ duration: 0.4 }}
+      className="glass p-5 gradient-border-top"
+    >
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-sm font-medium text-[var(--text-secondary)] uppercase tracking-wider">
           Efficiency vs Performance
@@ -111,7 +119,7 @@ export default function PnlDistribution({ traders }: Props) {
               </feMerge>
             </filter>
           </defs>
-          <CartesianGrid strokeDasharray="3 3" stroke="rgba(6, 182, 212, 0.06)" />
+          <CartesianGrid strokeDasharray="3 3" stroke="rgba(59, 130, 246, 0.06)" />
           <XAxis
             type="number"
             dataKey="rov"
@@ -132,8 +140,8 @@ export default function PnlDistribution({ traders }: Props) {
             tickLine={false}
           />
           <ZAxis type="number" dataKey="trades" range={[40, Math.min(400, maxTrades)]} />
-          <ReferenceLine y={0} stroke="rgba(6, 182, 212, 0.15)" strokeDasharray="4 4" />
-          <ReferenceLine x={0} stroke="rgba(6, 182, 212, 0.15)" strokeDasharray="4 4" />
+          <ReferenceLine y={0} stroke="rgba(59, 130, 246, 0.15)" strokeDasharray="4 4" />
+          <ReferenceLine x={0} stroke="rgba(59, 130, 246, 0.15)" strokeDasharray="4 4" />
           <Tooltip content={<CustomTooltip />} />
           <Scatter
             data={positive}
@@ -157,6 +165,6 @@ export default function PnlDistribution({ traders }: Props) {
           />
         </ScatterChart>
       </ResponsiveContainer>
-    </div>
+    </motion.div>
   );
 }

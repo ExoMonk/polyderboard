@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
+import { motion } from "motion/react";
 import { fetchHotMarkets } from "../api";
 import Spinner from "../components/Spinner";
 import { formatUsd, formatNumber, timeAgo } from "../lib/format";
+import { tapScale } from "../lib/motion";
 
 const PERIODS = [
   { label: "1H", value: "1h" },
@@ -17,7 +19,7 @@ export default function Activity() {
   return (
     <div className="space-y-8">
       <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-black gradient-text tracking-tight">Activity</h1>
+        <h1 className="text-3xl font-black gradient-text tracking-tight glitch-text">Activity</h1>
       </div>
       <HotMarkets period={period} setPeriod={setPeriod} />
     </div>
@@ -41,17 +43,18 @@ function HotMarkets({ period, setPeriod }: { period: string; setPeriod: (p: stri
         <h2 className="text-lg font-bold gradient-text">Hot Markets</h2>
         <div className="flex gap-1">
           {PERIODS.map((p) => (
-            <button
+            <motion.button
               key={p.value}
               onClick={() => setPeriod(p.value)}
+              whileTap={tapScale}
               className={`px-4 py-1.5 text-xs rounded-full font-medium transition-all duration-200 ${
                 period === p.value
-                  ? "bg-[var(--accent-cyan)]/10 text-[var(--accent-cyan)] border border-[var(--accent-cyan)]/30 shadow-[0_0_8px_rgba(34,211,238,0.15)]"
+                  ? "bg-[var(--accent-blue)]/10 text-[var(--accent-blue)] border border-[var(--accent-blue)]/30 shadow-[0_0_8px_rgba(59,130,246,0.15)]"
                   : "text-[var(--text-secondary)] border border-transparent hover:text-[var(--text-primary)] hover:border-[var(--border-glow)]"
               }`}
             >
               {p.label}
-            </button>
+            </motion.button>
           ))}
         </div>
       </div>
@@ -80,8 +83,11 @@ function HotMarkets({ period, setPeriod }: { period: string; setPeriod: (p: stri
                   const vol = parseFloat(m.volume);
                   const pct = maxVolume > 0 ? (vol / maxVolume) * 100 : 0;
                   return (
-                    <tr
+                    <motion.tr
                       key={m.token_id}
+                      initial={{ opacity: 0, x: -8 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ duration: 0.25, delay: i * 0.03 }}
                       onClick={() => navigate(`/market/${encodeURIComponent(m.all_token_ids.join(','))}`)}
                       className="border-b border-[var(--border-subtle)] row-glow cursor-pointer"
                     >
@@ -92,9 +98,14 @@ function HotMarkets({ period, setPeriod }: { period: string; setPeriod: (p: stri
                             {m.question}
                           </span>
                           {m.outcome && (
-                            <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--accent-purple)]/10 text-[var(--accent-purple)] border border-[var(--accent-purple)]/20 w-fit">
+                            <motion.span
+                              initial={{ scale: 0.8, opacity: 0 }}
+                              animate={{ scale: 1, opacity: 1 }}
+                              transition={{ duration: 0.2, delay: i * 0.03 + 0.1 }}
+                              className="text-xs px-2 py-0.5 rounded-full bg-[var(--accent-orange)]/10 text-[var(--accent-orange)] border border-[var(--accent-orange)]/20 w-fit"
+                            >
                               {m.outcome}
-                            </span>
+                            </motion.span>
                           )}
                         </div>
                       </td>
@@ -102,9 +113,11 @@ function HotMarkets({ period, setPeriod }: { period: string; setPeriod: (p: stri
                         <div className="flex flex-col items-end gap-1">
                           <span className="font-mono text-[var(--text-primary)]">{formatUsd(m.volume)}</span>
                           <div className="w-24 h-1 rounded-full bg-[var(--border-subtle)] overflow-hidden">
-                            <div
-                              className="h-full rounded-full bg-gradient-to-r from-cyan-500/60 to-purple-500/60"
-                              style={{ width: `${pct}%` }}
+                            <motion.div
+                              className="h-full rounded-full bg-gradient-to-r from-blue-500/60 to-orange-500/60"
+                              initial={{ width: 0 }}
+                              animate={{ width: `${pct}%` }}
+                              transition={{ duration: 0.6, ease: "easeOut", delay: i * 0.03 }}
                             />
                           </div>
                         </div>
@@ -116,12 +129,12 @@ function HotMarkets({ period, setPeriod }: { period: string; setPeriod: (p: stri
                         {formatNumber(m.unique_traders)}
                       </td>
                       <td className="px-4 py-3 text-left text-[var(--text-secondary)] hidden lg:table-cell">
-                        {m.category || "—"}
+                        {m.category || "\u2014"}
                       </td>
                       <td className="px-4 py-3 text-right text-[var(--text-secondary)] hidden lg:table-cell">
                         {timeAgo(m.last_trade)}
                       </td>
-                    </tr>
+                    </motion.tr>
                   );
                 })}
               </tbody>

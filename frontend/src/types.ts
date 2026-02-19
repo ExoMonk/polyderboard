@@ -145,6 +145,43 @@ export interface MarketResolutionAlert {
   tx_hash: string;
   block_number: number;
   question?: string;
+  winning_outcome?: string;
+  outcomes: string[];
+  token_id?: string;
 }
 
-export type Alert = WhaleTradeAlert | MarketResolutionAlert;
+export interface FailedSettlementAlert {
+  kind: "FailedSettlement";
+  tx_hash: string;
+  block_number: number;
+  timestamp: string;
+  from_address: string;
+  to_contract: string;
+  function_name: string;
+  gas_used: string;
+}
+
+export type Alert = WhaleTradeAlert | MarketResolutionAlert | FailedSettlementAlert;
+
+// Polymarket WebSocket (live market data)
+
+export interface PricePoint {
+  timestamp: number;
+  yesPrice: number;
+  noPrice: number;
+}
+
+export interface TradePoint {
+  timestamp: number;
+  price: number;
+  side: "buy" | "sell";
+  size: number;
+}
+
+export type MarketWsStatus = "connecting" | "connected" | "disconnected";
+
+export interface BidAsk {
+  bestBid: number | null;
+  bestAsk: number | null;
+  spread: number | null;
+}

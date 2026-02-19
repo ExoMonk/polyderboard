@@ -1,8 +1,12 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { motion } from "motion/react";
 import { fetchRecentTrades, fetchMarketResolve } from "../api";
 import Spinner from "../components/Spinner";
+import LivePriceChart from "../charts/LivePriceChart";
+import useMarketWs from "../hooks/useMarketWs";
+import useTradeWs from "../hooks/useTradeWs";
 import {
   formatUsd,
   formatNumber,
@@ -10,6 +14,7 @@ import {
   shortenAddress,
   polygonscanTx,
 } from "../lib/format";
+import { staggerContainer, statCardVariants } from "../lib/motion";
 
 function formatCents(priceStr: string): string {
   const num = parseFloat(priceStr);
@@ -19,8 +24,11 @@ function formatCents(priceStr: string): string {
 
 export default function MarketDetail() {
   const { tokenId } = useParams<{ tokenId: string }>();
-  // token IDs are comma-separated for multi-outcome markets (Yes + No)
   const decodedTokenIds = tokenId ? decodeURIComponent(tokenId) : "";
+  const tokenList = useMemo(
+    () => decodedTokenIds.split(",").map((s) => s.trim()),
+    [decodedTokenIds],
+  );
 
   const prevIdsRef = useRef<Set<string>>(new Set());
   const [newIds, setNewIds] = useState<Set<string>>(new Set());
@@ -29,11 +37,8 @@ export default function MarketDetail() {
     queryKey: ["marketTrades", decodedTokenIds],
     queryFn: () => fetchRecentTrades({ limit: 50, token_id: decodedTokenIds }),
     enabled: !!decodedTokenIds,
-    refetchInterval: 5_000,
   });
 
-  // On-demand resolve: fetch market info for token IDs not in server cache.
-  // Fires once per page visit; the server caches the result for future requests.
   const { data: resolved } = useQuery({
     queryKey: ["marketResolve", decodedTokenIds],
     queryFn: () => fetchMarketResolve(decodedTokenIds),
@@ -41,10 +46,24 @@ export default function MarketDetail() {
     staleTime: Infinity,
   });
 
+  // Live trade stream from our backend WS
+  const { liveTrades, connected: tradeWsConnected } = useTradeWs({
+    tokenIds: decodedTokenIds,
+  });
+
+  // Merge HTTP backfill + WS live trades (dedup by tx_hash)
+  const mergedTrades = useMemo(() => {
+    const httpTrades = data?.trades ?? [];
+    if (!liveTrades.length) return httpTrades;
+    const seen = new Set(httpTrades.map((t) => t.tx_hash));
+    const newFromWs = liveTrades.filter((t) => !seen.has(t.tx_hash));
+    return [...newFromWs, ...httpTrades];
+  }, [data?.trades, liveTrades]);
+
   // Highlight newly appeared trades
   useEffect(() => {
-    if (!data) return;
-    const currentIds = new Set(data.trades.map((t) => t.tx_hash));
+    if (!mergedTrades.length) return;
+    const currentIds = new Set(mergedTrades.map((t) => t.tx_hash));
     const fresh = new Set<string>();
     for (const id of currentIds) {
       if (!prevIdsRef.current.has(id)) fresh.add(id);
@@ -55,7 +74,55 @@ export default function MarketDetail() {
       return () => clearTimeout(timer);
     }
     prevIdsRef.current = currentIds;
-  }, [data]);
+  }, [mergedTrades]);
+
+  // Derive Yes/No token IDs (stable across renders)
+  const { yesTokenId, noTokenId } = useMemo(() => {
+    let yes: string | null = null;
+    let no: string | null = null;
+
+    if (data && data.trades.length > 0) {
+      const latestByToken = new Map<string, (typeof data.trades)[0]>();
+      for (const t of data.trades) {
+        if (!latestByToken.has(t.asset_id)) latestByToken.set(t.asset_id, t);
+      }
+      for (const [id, trade] of latestByToken) {
+        const outcome = trade.outcome || resolved?.[id]?.outcome || "";
+        if (outcome.toLowerCase() === "yes") yes = id;
+        else if (outcome.toLowerCase() === "no") no = id;
+      }
+    }
+
+    if (!yes && !no && tokenList.length >= 2) {
+      yes = tokenList[0];
+      no = tokenList[1];
+    } else if (!yes && no) {
+      yes = tokenList.find((id) => id !== no) || null;
+    } else if (yes && !no) {
+      no = tokenList.find((id) => id !== yes) || null;
+    }
+
+    return { yesTokenId: yes, noTokenId: no };
+  }, [data, resolved, tokenList]);
+
+  // Polymarket WSS for live price stream + our trades merged into one timeline
+  const { priceHistory, tradeMarkers, bidAsk, status, latestYesPrice } = useMarketWs({
+    yesTokenId,
+    noTokenId,
+    trades: mergedTrades,
+  });
+
+  // Derive prices for PriceBar (WSS takes priority over trade data)
+  const fallbackYes = useMemo(() => {
+    if (!mergedTrades.length || !yesTokenId) return NaN;
+    const anchor = mergedTrades[0];
+    const anchorPrice = parseFloat(anchor.price);
+    if (isNaN(anchorPrice)) return NaN;
+    return anchor.asset_id === yesTokenId ? anchorPrice : 1 - anchorPrice;
+  }, [mergedTrades, yesTokenId]);
+
+  const liveYes = latestYesPrice ?? fallbackYes;
+  const liveNo = !isNaN(liveYes) ? 1 - liveYes : NaN;
 
   if (isLoading) return <Spinner />;
   if (error)
@@ -65,78 +132,50 @@ export default function MarketDetail() {
       </div>
     );
 
-  // Derive question: prefer resolved data (on-demand fetch), fall back to trade data
-  const firstTrade = data?.trades[0];
+  const firstTrade = mergedTrades[0];
   const resolvedFirst = firstTrade && resolved?.[firstTrade.asset_id];
   const question =
     resolvedFirst?.question || firstTrade?.question || "Unknown Market";
-
-  // Derive Yes/No prices from the most recent trade.
-  // Binary outcome tokens always sum to $1, so derive the complement.
-  // Token ID order from URL: first = Yes, second = No (Polymarket convention).
-  const tokenList = decodedTokenIds.split(",").map((s) => s.trim());
-  let yesPrice = NaN;
-  let noPrice = NaN;
-  if (data && data.trades.length > 0) {
-    // Build a map: asset_id → most recent trade (trades are sorted newest-first)
-    const latestByToken = new Map<string, (typeof data.trades)[0]>();
-    for (const t of data.trades) {
-      if (!latestByToken.has(t.asset_id)) latestByToken.set(t.asset_id, t);
-    }
-
-    // Identify Yes/No tokens: prefer outcome label (from trade or resolved), fall back to URL order
-    let yesTokenId: string | undefined;
-    let noTokenId: string | undefined;
-    for (const [id, trade] of latestByToken) {
-      const outcome = trade.outcome || resolved?.[id]?.outcome || "";
-      if (outcome.toLowerCase() === "yes") yesTokenId = id;
-      else if (outcome.toLowerCase() === "no") noTokenId = id;
-    }
-    if (!yesTokenId && !noTokenId && tokenList.length >= 2) {
-      yesTokenId = tokenList[0];
-      noTokenId = tokenList[1];
-    } else if (!yesTokenId && noTokenId) {
-      yesTokenId = [...latestByToken.keys()].find((id) => id !== noTokenId);
-    } else if (yesTokenId && !noTokenId) {
-      noTokenId = [...latestByToken.keys()].find((id) => id !== yesTokenId);
-    }
-
-    // Use the most recent trade (index 0) and derive complement
-    const anchor = data.trades[0];
-    const anchorPrice = parseFloat(anchor.price);
-    if (!isNaN(anchorPrice)) {
-      if (anchor.asset_id === noTokenId) {
-        noPrice = anchorPrice;
-        yesPrice = 1 - anchorPrice;
-      } else {
-        yesPrice = anchorPrice;
-        noPrice = 1 - anchorPrice;
-      }
-    }
-  }
 
   return (
     <div className="space-y-8">
       {/* Header */}
       <div>
-        <Link
-          to="/activity"
-          className="text-sm text-[var(--text-secondary)] hover:text-[var(--accent-cyan)] transition-colors duration-200"
-        >
-          &larr; Back to Activity
-        </Link>
-        <h1 className="text-2xl font-black gradient-text tracking-tight mt-3">
+        <motion.div whileHover={{ x: -4 }} className="inline-block">
+          <Link
+            to="/activity"
+            className="text-sm text-[var(--text-secondary)] hover:text-[var(--accent-blue)] transition-colors duration-200"
+          >
+            &larr; Back to Activity
+          </Link>
+        </motion.div>
+        <h1 className="text-2xl font-black gradient-text tracking-tight mt-3 glitch-text">
           {question}
         </h1>
       </div>
 
       {/* Stats + Yes/No Prices */}
-      {data && data.trades.length > 0 && (
-        <div className="grid grid-cols-3 gap-4">
-          <StatCard label="Trades" value={formatNumber(data.trades.length)} />
-          <PriceBar yesPrice={yesPrice} noPrice={noPrice} />
-          <StatCard label="Last Trade" value={timeAgo(data.trades[0].block_timestamp)} />
-        </div>
+      {mergedTrades.length > 0 && (
+        <motion.div
+          className="grid grid-cols-3 gap-4"
+          variants={staggerContainer}
+          initial="initial"
+          animate="animate"
+        >
+          <StatCard label="Trades" value={formatNumber(mergedTrades.length)} />
+          <PriceBar yesPrice={liveYes} noPrice={liveNo} />
+          <StatCard label="Last Trade" value={timeAgo(mergedTrades[0].block_timestamp)} />
+        </motion.div>
+      )}
+
+      {/* Live Price Chart */}
+      {yesTokenId && (
+        <LivePriceChart
+          priceHistory={priceHistory}
+          tradeMarkers={tradeMarkers}
+          status={status}
+          bidAsk={bidAsk}
+        />
       )}
 
       {/* Live Feed */}
@@ -144,12 +183,18 @@ export default function MarketDetail() {
         <div className="flex items-center gap-3 mb-4">
           <h2 className="text-lg font-bold gradient-text">Live Feed</h2>
           <span className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)]">
-            <span className="w-2 h-2 rounded-full bg-[var(--neon-green)] animate-pulse shadow-[0_0_8px_var(--neon-green)]" />
-            Live
+            <span
+              className={`w-2 h-2 rounded-full ${
+                tradeWsConnected
+                  ? "bg-[var(--neon-green)] neon-pulse shadow-[0_0_8px_var(--neon-green)]"
+                  : "bg-[var(--neon-red)]"
+              }`}
+            />
+            {tradeWsConnected ? "Live" : "Reconnecting"}
           </span>
         </div>
 
-        {data && data.trades.length > 0 ? (
+        {mergedTrades.length > 0 ? (
           <div className="glass overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -166,11 +211,14 @@ export default function MarketDetail() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.trades.map((t, i) => (
-                    <tr
+                  {mergedTrades.map((t, i) => (
+                    <motion.tr
                       key={`${t.tx_hash}-${i}`}
+                      initial={{ opacity: 0, x: -8 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ duration: 0.25, delay: i * 0.02 }}
                       className={`border-b border-[var(--border-subtle)] row-glow transition-colors duration-700 ${
-                        newIds.has(t.tx_hash) ? "bg-[var(--accent-cyan)]/8" : ""
+                        newIds.has(t.tx_hash) ? "bg-[var(--accent-blue)]/8" : ""
                       }`}
                     >
                       <td className="px-4 py-3 text-[var(--text-secondary)] whitespace-nowrap text-xs">
@@ -206,7 +254,7 @@ export default function MarketDetail() {
                       <td className="px-4 py-3 text-right font-mono text-[var(--text-primary)] text-xs">
                         {formatNumber(t.amount)}
                       </td>
-                      <td className="px-4 py-3 text-right font-mono glow-cyan text-xs">
+                      <td className="px-4 py-3 text-right font-mono glow-blue text-xs">
                         {formatCents(t.price)}
                       </td>
                       <td className="px-4 py-3 text-right font-mono text-[var(--text-primary)] text-xs">
@@ -215,7 +263,7 @@ export default function MarketDetail() {
                       <td className="px-4 py-3 hidden md:table-cell">
                         <Link
                           to={`/trader/${t.trader}`}
-                          className="text-[var(--accent-cyan)]/70 hover:text-[var(--accent-cyan)] font-mono text-xs transition-colors duration-200"
+                          className="text-[var(--accent-blue)]/70 hover:text-[var(--accent-blue)] font-mono text-xs transition-colors duration-200"
                         >
                           {shortenAddress(t.trader)}
                         </Link>
@@ -225,12 +273,12 @@ export default function MarketDetail() {
                           href={polygonscanTx(t.tx_hash)}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="text-[var(--text-secondary)] opacity-40 hover:opacity-100 hover:text-[var(--accent-cyan)] font-mono text-xs transition-all duration-200"
+                          className="text-[var(--text-secondary)] opacity-40 hover:opacity-100 hover:text-[var(--accent-blue)] font-mono text-xs transition-all duration-200"
                         >
                           {shortenAddress(t.tx_hash)}
                         </a>
                       </td>
-                    </tr>
+                    </motion.tr>
                   ))}
                 </tbody>
               </table>
@@ -248,10 +296,10 @@ export default function MarketDetail() {
 
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="glass p-4 gradient-border-top">
+    <motion.div variants={statCardVariants} className="glass p-4 gradient-border-top">
       <div className="text-xs text-[var(--text-secondary)] mb-2 uppercase tracking-wider">{label}</div>
       <div className="text-xl font-bold font-mono text-[var(--text-primary)]">{value}</div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -260,7 +308,7 @@ function PriceBar({ yesPrice, noPrice }: { yesPrice: number; noPrice: number }) 
   const noPct = isNaN(noPrice) ? 50 : Math.round(noPrice * 100);
 
   return (
-    <div className="glass p-4 gradient-border-top">
+    <motion.div variants={statCardVariants} className="glass p-4 gradient-border-top">
       <div className="text-xs text-[var(--text-secondary)] mb-3 uppercase tracking-wider">
         Prices
       </div>
@@ -273,15 +321,19 @@ function PriceBar({ yesPrice, noPrice }: { yesPrice: number; noPrice: number }) 
         </span>
       </div>
       <div className="flex h-2 rounded-full overflow-hidden gap-0.5">
-        <div
-          className="rounded-full bg-[var(--neon-green)]/60 transition-all duration-500"
-          style={{ width: `${yesPct}%` }}
+        <motion.div
+          className="rounded-full bg-[var(--neon-green)]/60"
+          initial={{ width: 0 }}
+          animate={{ width: `${yesPct}%` }}
+          transition={{ type: "spring", stiffness: 120, damping: 20 }}
         />
-        <div
-          className="rounded-full bg-[var(--neon-red)]/40 transition-all duration-500"
-          style={{ width: `${noPct}%` }}
+        <motion.div
+          className="rounded-full bg-[var(--neon-red)]/40"
+          initial={{ width: 0 }}
+          animate={{ width: `${noPct}%` }}
+          transition={{ type: "spring", stiffness: 120, damping: 20 }}
         />
       </div>
-    </div>
+    </motion.div>
   );
 }

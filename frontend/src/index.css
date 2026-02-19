@@ -1,13 +1,13 @@
 @import "tailwindcss";
 
 :root {
-  --bg-deep: #050510;
-  --bg-panel: rgba(12, 12, 30, 0.75);
-  --bg-panel-solid: #0c0c1e;
-  --border-glow: rgba(6, 182, 212, 0.12);
+  --bg-deep: #030712;
+  --bg-panel: rgba(10, 18, 40, 0.75);
+  --bg-panel-solid: #0a1228;
+  --border-glow: rgba(59, 130, 246, 0.12);
   --border-subtle: rgba(100, 116, 139, 0.15);
-  --accent-cyan: #22d3ee;
-  --accent-purple: #a855f7;
+  --accent-blue: #3b82f6;
+  --accent-orange: #f97316;
   --neon-green: #00ff88;
   --neon-red: #ff3366;
   --text-primary: #e2e8f0;
@@ -24,11 +24,29 @@
     color: var(--text-primary);
     background-color: var(--bg-deep);
     background-image:
-      radial-gradient(rgba(6, 182, 212, 0.03) 1px, transparent 1px);
-    background-size: 24px 24px;
+      linear-gradient(rgba(59, 130, 246, 0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(59, 130, 246, 0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
     font-family: "Inter", system-ui, -apple-system, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Scanline overlay */
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9999;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(59, 130, 246, 0.015) 2px,
+      rgba(59, 130, 246, 0.015) 4px
+    );
+    opacity: 0.5;
   }
 
   /* Custom scrollbar */
@@ -40,11 +58,11 @@
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: rgba(6, 182, 212, 0.2);
+    background: rgba(59, 130, 246, 0.2);
     border-radius: 3px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: rgba(6, 182, 212, 0.4);
+    background: rgba(59, 130, 246, 0.4);
   }
 }
 
@@ -56,6 +74,10 @@
     -webkit-backdrop-filter: blur(16px);
     border: 1px solid var(--border-glow);
     border-radius: 12px;
+    transition: box-shadow 0.3s ease;
+  }
+  .glass:hover {
+    box-shadow: 0 0 20px rgba(59, 130, 246, 0.06), 0 0 40px rgba(249, 115, 22, 0.03);
   }
 
   /* Subtle glow text */
@@ -67,14 +89,18 @@
     color: var(--neon-red);
     text-shadow: 0 0 8px rgba(255, 51, 102, 0.4);
   }
-  .glow-cyan {
-    color: var(--accent-cyan);
-    text-shadow: 0 0 8px rgba(34, 211, 238, 0.4);
+  .glow-blue {
+    color: var(--accent-blue);
+    text-shadow: 0 0 8px rgba(59, 130, 246, 0.4);
+  }
+  .glow-orange {
+    color: var(--accent-orange);
+    text-shadow: 0 0 8px rgba(249, 115, 22, 0.4);
   }
 
   /* Gradient text */
   .gradient-text {
-    background: linear-gradient(135deg, var(--accent-cyan), #ffffff 70%);
+    background: linear-gradient(135deg, var(--accent-blue), #ffffff 70%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
@@ -91,8 +117,10 @@
     left: 0;
     right: 0;
     height: 1px;
-    background: linear-gradient(90deg, transparent, var(--accent-cyan), var(--accent-purple), transparent);
-    opacity: 0.6;
+    background: linear-gradient(90deg, transparent, var(--accent-blue), var(--accent-orange), transparent);
+    background-size: 200% 100%;
+    animation: borderFlow 4s ease-in-out infinite;
+    opacity: 0.7;
   }
 
   /* Gradient border bottom */
@@ -103,7 +131,9 @@
     left: 0;
     right: 0;
     height: 1px;
-    background: linear-gradient(90deg, transparent, var(--accent-cyan), var(--accent-purple), transparent);
+    background: linear-gradient(90deg, transparent, var(--accent-blue), var(--accent-orange), transparent);
+    background-size: 200% 100%;
+    animation: borderFlow 4s ease-in-out infinite;
     opacity: 0.5;
   }
 
@@ -112,8 +142,8 @@
     transition: all 0.2s ease;
   }
   .row-glow:hover {
-    background: rgba(6, 182, 212, 0.04);
-    box-shadow: inset 3px 0 0 var(--accent-cyan);
+    background: rgba(59, 130, 246, 0.04);
+    box-shadow: inset 3px 0 0 var(--accent-blue);
   }
 
   /* Rank badges */
@@ -130,13 +160,41 @@
     text-shadow: 0 0 6px rgba(205, 127, 50, 0.4);
   }
 
-  /* Shimmer animation for borders */
-  @keyframes shimmer {
-    0% { opacity: 0.3; }
-    50% { opacity: 0.7; }
-    100% { opacity: 0.3; }
+  /* Glitch text effect on hover */
+  .glitch-text:hover {
+    animation: glitch 0.3s ease-in-out;
   }
-  .shimmer-border::before {
-    animation: shimmer 3s ease-in-out infinite;
+
+  /* Neon pulse for live indicators */
+  .neon-pulse {
+    animation: neonPulse 2s ease-in-out infinite;
+  }
+}
+
+/* Keyframes */
+@keyframes borderFlow {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+@keyframes glitch {
+  0%, 100% { text-shadow: 2px 0 var(--accent-orange), -2px 0 var(--accent-blue); }
+  25% { text-shadow: -2px -1px var(--accent-orange), 2px 1px var(--accent-blue); }
+  50% { text-shadow: 1px 2px var(--accent-orange), -1px -2px var(--accent-blue); }
+  75% { text-shadow: -1px 1px var(--accent-orange), 1px -1px var(--accent-blue); }
+}
+
+@keyframes neonPulse {
+  0%, 100% { box-shadow: 0 0 4px rgba(59, 130, 246, 0.2); }
+  50% { box-shadow: 0 0 12px rgba(59, 130, 246, 0.4), 0 0 24px rgba(249, 115, 22, 0.1); }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

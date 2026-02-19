@@ -1,12 +1,14 @@
 import { useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
+import { motion } from "motion/react";
 import { fetchTrader, fetchTraderTrades, fetchTraderPositions, fetchPnlChart } from "../api";
 import type { OpenPosition, PnlTimeframe } from "../types";
 import Spinner from "../components/Spinner";
 import Pagination from "../components/Pagination";
 import PnlChart from "../charts/PnlChart";
 import { formatUsd, formatNumber, formatDate, formatTimestamp, shortenAddress, polygonscanAddress, polygonscanTx, polymarketAddress } from "../lib/format";
+import { staggerContainer, statCardVariants, tapScale } from "../lib/motion";
 
 const PAGE_SIZE = 50;
 type PosTab = "open" | "closed";
@@ -53,14 +55,16 @@ export default function TraderDetail() {
     <div className="space-y-8">
       {/* Header */}
       <div>
-        <Link to="/" className="text-sm text-[var(--text-secondary)] hover:text-[var(--accent-cyan)] transition-colors duration-200">
-          ← Back to Leaderboard
-        </Link>
+        <motion.div whileHover={{ x: -4 }} className="inline-block">
+          <Link to="/" className="text-sm text-[var(--text-secondary)] hover:text-[var(--accent-blue)] transition-colors duration-200">
+            &larr; Back to Leaderboard
+          </Link>
+        </motion.div>
         <div className="flex items-center gap-3 mt-3">
           <h1 className="text-2xl font-black font-mono gradient-text">{shortenAddress(address!)}</h1>
           <button
             onClick={() => navigator.clipboard.writeText(address!)}
-            className="text-[var(--text-secondary)] hover:text-[var(--accent-cyan)] transition-colors duration-200"
+            className="text-[var(--text-secondary)] hover:text-[var(--accent-blue)] transition-colors duration-200"
             title="Copy address"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -71,7 +75,7 @@ export default function TraderDetail() {
             href={polygonscanAddress(address!)}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-[var(--text-secondary)] hover:text-[var(--accent-cyan)] transition-colors duration-200 text-sm"
+            className="text-[var(--text-secondary)] hover:text-[var(--accent-blue)] transition-colors duration-200 text-sm"
           >
             Polygonscan ↗
           </a>
@@ -79,7 +83,7 @@ export default function TraderDetail() {
             href={polymarketAddress(address!)}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-[var(--text-secondary)] hover:text-[var(--accent-cyan)] transition-colors duration-200 text-sm"
+            className="text-[var(--text-secondary)] hover:text-[var(--accent-blue)] transition-colors duration-200 text-sm"
           >
             Polymarket ↗
           </a>
@@ -87,14 +91,19 @@ export default function TraderDetail() {
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+      <motion.div
+        className="grid grid-cols-2 md:grid-cols-3 gap-4"
+        variants={staggerContainer}
+        initial="initial"
+        animate="animate"
+      >
         <StatCard label="PnL" value={formatUsd(trader.realized_pnl)} glow={pnl >= 0 ? "green" : "red"} />
         <StatCard label="Total Volume" value={formatUsd(trader.total_volume)} />
         <StatCard label="Trades" value={formatNumber(trader.trade_count)} />
         <StatCard label="Markets" value={formatNumber(trader.markets_traded)} />
         <StatCard label="Total Fees" value={formatUsd(trader.total_fees)} />
         <StatCard label="Active Since" value={formatDate(trader.first_trade)} />
-      </div>
+      </motion.div>
 
       {/* PnL Chart */}
       {pnlChart && (
@@ -115,17 +124,18 @@ export default function TraderDetail() {
                 { value: "open" as PosTab, label: "Open", count: positionsData.open.length },
                 { value: "closed" as PosTab, label: "Closed", count: positionsData.closed.length },
               ]).map((tab) => (
-                <button
+                <motion.button
                   key={tab.value}
                   onClick={() => setPosTab(tab.value)}
+                  whileTap={tapScale}
                   className={`px-4 py-1.5 text-xs rounded-full font-medium transition-all duration-200 ${
                     posTab === tab.value
-                      ? "bg-[var(--accent-cyan)]/10 text-[var(--accent-cyan)] border border-[var(--accent-cyan)]/30 shadow-[0_0_8px_rgba(34,211,238,0.15)]"
+                      ? "bg-[var(--accent-blue)]/10 text-[var(--accent-blue)] border border-[var(--accent-blue)]/30 shadow-[0_0_8px_rgba(59,130,246,0.15)]"
                       : "text-[var(--text-secondary)] border border-transparent hover:text-[var(--text-primary)] hover:border-[var(--border-glow)]"
                   }`}
                 >
                   {tab.label} ({tab.count})
-                </button>
+                </motion.button>
               ))}
             </div>
           </div>
@@ -139,17 +149,18 @@ export default function TraderDetail() {
           <h2 className="text-lg font-bold gradient-text">Trade History</h2>
           <div className="flex gap-1">
             {["", "buy", "sell"].map((s) => (
-              <button
+              <motion.button
                 key={s}
                 onClick={() => { setSideFilter(s); setOffset(0); }}
+                whileTap={tapScale}
                 className={`px-4 py-1.5 text-xs rounded-full font-medium transition-all duration-200 ${
                   sideFilter === s
-                    ? "bg-[var(--accent-cyan)]/10 text-[var(--accent-cyan)] border border-[var(--accent-cyan)]/30 shadow-[0_0_8px_rgba(34,211,238,0.15)]"
+                    ? "bg-[var(--accent-blue)]/10 text-[var(--accent-blue)] border border-[var(--accent-blue)]/30 shadow-[0_0_8px_rgba(59,130,246,0.15)]"
                     : "text-[var(--text-secondary)] border border-transparent hover:text-[var(--text-primary)] hover:border-[var(--border-glow)]"
                 }`}
               >
                 {s === "" ? "All" : s === "buy" ? "Buy" : "Sell"}
-              </button>
+              </motion.button>
             ))}
           </div>
         </div>
@@ -175,7 +186,13 @@ export default function TraderDetail() {
                   </thead>
                   <tbody>
                     {tradesData.trades.map((t, i) => (
-                      <tr key={`${t.tx_hash}-${i}`} className="border-b border-[var(--border-subtle)] row-glow">
+                      <motion.tr
+                        key={`${t.tx_hash}-${i}`}
+                        initial={{ opacity: 0, x: -8 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ duration: 0.25, delay: i * 0.02 }}
+                        className="border-b border-[var(--border-subtle)] row-glow"
+                      >
                         <td className="px-4 py-3 text-[var(--text-secondary)] whitespace-nowrap">{formatTimestamp(t.block_timestamp)}</td>
                         <td className="px-4 py-3 text-right font-mono text-[var(--text-secondary)] text-xs">{formatNumber(t.block_number)}</td>
                         <td className="px-4 py-3 text-center">
@@ -196,12 +213,12 @@ export default function TraderDetail() {
                             href={polygonscanTx(t.tx_hash)}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-[var(--accent-cyan)]/50 hover:text-[var(--accent-cyan)] font-mono text-xs transition-colors duration-200"
+                            className="text-[var(--accent-blue)]/50 hover:text-[var(--accent-blue)] font-mono text-xs transition-colors duration-200"
                           >
                             {shortenAddress(t.tx_hash)}
                           </a>
                         </td>
-                      </tr>
+                      </motion.tr>
                     ))}
                   </tbody>
                 </table>
@@ -218,6 +235,8 @@ export default function TraderDetail() {
 }
 
 function PositionsTable({ positions }: { positions: OpenPosition[] }) {
+  const navigate = useNavigate();
+
   if (positions.length === 0) {
     return <p className="text-[var(--text-secondary)] text-center py-8">No positions</p>;
   }
@@ -238,12 +257,21 @@ function PositionsTable({ positions }: { positions: OpenPosition[] }) {
             </tr>
           </thead>
           <tbody>
-            {positions.map((p) => {
+            {positions.map((p, i) => {
               const positionPnl = parseFloat(p.pnl);
               return (
-                <tr key={p.asset_id} className="border-b border-[var(--border-subtle)] row-glow">
-                  <td className="px-4 py-3 text-[var(--text-primary)] max-w-xs truncate" title={p.question}>
-                    {p.question}
+                <motion.tr
+                  key={p.asset_id}
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ duration: 0.25, delay: i * 0.02 }}
+                  className="border-b border-[var(--border-subtle)] row-glow cursor-pointer"
+                  onClick={() => navigate(`/market/${p.asset_id}`)}
+                >
+                  <td className="px-4 py-3 max-w-xs truncate" title={p.question}>
+                    <span className="text-[var(--text-primary)] hover:text-[var(--accent-cyan)] transition-colors duration-200">
+                      {p.question}
+                    </span>
                   </td>
                   <td className="px-4 py-3 text-center">
                     {p.outcome && (
@@ -282,7 +310,7 @@ function PositionsTable({ positions }: { positions: OpenPosition[] }) {
                   <td className="px-4 py-3 text-right font-mono text-[var(--text-secondary)]">
                     {formatUsd(p.volume)}
                   </td>
-                </tr>
+                </motion.tr>
               );
             })}
           </tbody>
@@ -306,9 +334,9 @@ function StatCard({ label, value, glow }: { label: string; value: string; glow?:
     : "text-[var(--text-primary)]";
 
   return (
-    <div className={`glass p-4 gradient-border-top ${borderColor}`}>
+    <motion.div variants={statCardVariants} className={`glass p-4 gradient-border-top ${borderColor}`}>
       <div className="text-xs text-[var(--text-secondary)] mb-2 uppercase tracking-wider">{label}</div>
       <div className={`text-xl font-bold font-mono ${valueClass}`}>{value}</div>
-    </div>
+    </motion.div>
   );
 }
