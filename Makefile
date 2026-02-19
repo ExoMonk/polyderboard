@@ -1,6 +1,6 @@
-.PHONY: indexer live serve query frontend backfill backfill-resolutions backfill-stop prune clean
+.PHONY: indexer live serve query frontend backfill backfill-resolutions backfill-stop prune clean publish deploy
 
-COMPOSE := docker compose -f development/docker-compose.yml
+COMPOSE := docker compose -f deployments/polyderboard-dev/docker-compose.yml
 
 indexer: ## Start ClickHouse + rindexer (shows indexer logs)
 	@./scripts/indexer.sh
@@ -36,3 +36,9 @@ prune: ## Delete data before a block: BEFORE=83125113 make prune
 clean: ## Tear down Docker containers + volumes
 	$(COMPOSE) down -v
 	@docker rm -f poly-backfill 2>/dev/null || true
+
+publish: ## Build and push API image to GHCR
+	@./scripts/publish.sh
+
+deploy: ## Deploy latest image to production VPS
+	@./scripts/deploy.sh

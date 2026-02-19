@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-COMPOSE="docker compose -f $ROOT/development/docker-compose.yml"
+COMPOSE="docker compose -f $ROOT/deployments/polyderboard-dev/docker-compose.yml"
 YAML="$ROOT/indexer/polywatcher.yaml"
 
 # ── Live mode: patch start_block to current block ───────────────────────────

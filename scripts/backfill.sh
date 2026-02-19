@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-COMPOSE="docker compose -f $ROOT/development/docker-compose.yml"
+COMPOSE="docker compose -f $ROOT/deployments/polyderboard-dev/docker-compose.yml"
 YAML="$ROOT/indexer/polywatcher.yaml"
 BACKFILL_YAML="$ROOT/indexer/polywatcher_backfill.yaml"
 CONTAINER="poly-backfill"
@@ -63,7 +63,7 @@ rm -f "${BACKFILL_YAML}.bak"
 trap 'rm -f "$BACKFILL_YAML"' EXIT
 
 # ── Get compose network name ────────────────────────────────────────────────
-NETWORK=$($COMPOSE network ls --format '{{.Name}}' 2>/dev/null | grep -m1 '_default' || echo "development_default")
+NETWORK=$($COMPOSE network ls --format '{{.Name}}' 2>/dev/null | grep -m1 '_default' || echo "polyderboard-dev_default")
 
 # ── Stop any existing backfill container ────────────────────────────────────
 docker stop "$CONTAINER" 2>/dev/null || true
