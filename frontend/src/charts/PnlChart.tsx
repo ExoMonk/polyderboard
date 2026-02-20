@@ -1,3 +1,4 @@
+import { memo } from "react";
 import {
   AreaChart,
   Area,
@@ -45,7 +46,7 @@ function formatDateLabel(dateStr: string, timeframe: PnlTimeframe): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-export default function PnlChart({ points, timeframe, onTimeframeChange }: Props) {
+export default memo(function PnlChart({ points, timeframe, onTimeframeChange }: Props) {
   const data = points.map((p) => ({
     date: formatDateLabel(p.date, timeframe),
     pnl: parseFloat(p.pnl),
@@ -144,4 +145,4 @@ export default function PnlChart({ points, timeframe, onTimeframeChange }: Props
       )}
     </motion.div>
   );
-}
+});

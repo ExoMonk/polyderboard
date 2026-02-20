@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { ScatterChart, Scatter, XAxis, YAxis, ZAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from "recharts";
 import { motion } from "motion/react";
 import type { TraderSummary } from "../types";
@@ -73,7 +74,7 @@ function CustomTooltip({ active, payload }: { active?: boolean; payload?: Array<
   );
 }
 
-export default function PnlDistribution({ traders }: Props) {
+export default memo(function PnlDistribution({ traders }: Props) {
   const { positive, negative } = prepareData(traders);
   const maxTrades = Math.max(...traders.map((t) => t.trade_count), 1);
 
@@ -167,4 +168,4 @@ export default function PnlDistribution({ traders }: Props) {
       </ResponsiveContainer>
     </motion.div>
   );
-}
+});

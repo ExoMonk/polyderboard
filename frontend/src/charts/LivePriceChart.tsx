@@ -65,8 +65,7 @@ export default function LivePriceChart({
   const latestRef = useRef<number | null>(null);
   const animRef = useRef<number | null>(null); // current lerp'd value
   const rangeSetRef = useRef(false); // whether initial range has been set
-  const polyInitRef = useRef(false); // whether poly series has initial data
-  const prevTradeCountRef = useRef(0); // track trade count for incremental updates
+  const prevHistLenRef = useRef(0); // track priceHistory length to detect changes
   const windowRef = useRef<TimeWindow>("5m");
   const [timeWindow, setTimeWindow] = useState<TimeWindow>("5m");
 
@@ -316,20 +315,14 @@ export default function LivePriceChart({
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Update data on priceHistory / tradeMarkers change ─────────────
-  // Poly series: seed once with historical data, then the 60fps lerp loop is
-  // the sole writer. This avoids setData() full-redraws and "Cannot update
-  // oldest data" errors (the lerp loop's "now" bar is always the latest).
+  // Always rebuild poly/no series from priceHistory so new trades AND WSS
+  // ticks are reflected. The immediate update() to "now" with the lerp value
+  // runs synchronously (same JS task), so the browser never paints the
+  // intermediate state — no visual flash.
   useEffect(() => {
     if (!polyRef.current || !chainRef.current || !markersRef.current) return;
 
-    // Seed poly + no series on first data, and re-seed when new on-chain trades arrive.
-    // Between trades, the 60fps lerp loop is the sole writer (smooth animation).
-    const tradeCount = tradeMarkers.size;
-    const needsReseed =
-      !polyInitRef.current ||
-      (tradeCount > prevTradeCountRef.current && polyInitRef.current);
-
-    if (needsReseed && priceHistory.length > 0) {
+    if (priceHistory.length > prevHistLenRef.current && priceHistory.length > 0) {
       const allData = buildSeries(priceHistory);
       if (allData.length > 0) {
         polyRef.current.setData(allData);
@@ -342,10 +335,9 @@ export default function LivePriceChart({
           polyRef.current.update({ time: now, value: animRef.current });
           noRef.current?.update({ time: now, value: 100 - animRef.current });
         }
-        polyInitRef.current = true;
       }
     }
-    prevTradeCountRef.current = tradeCount;
+    prevHistLenRef.current = priceHistory.length;
 
     // Chain series (on-chain trade dots) — setData is fine, no visible line
     const chainData = buildSeries(priceHistory, tradeMarkers);

@@ -1,13 +1,15 @@
+import { lazy, Suspense } from "react";
 import { Routes, Route, useLocation } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import Layout from "./components/Layout";
 import AuthGate from "./components/AuthGate";
-import Dashboard from "./pages/Dashboard";
-import TraderDetail from "./pages/TraderDetail";
-import Activity from "./pages/Activity";
-import MarketDetail from "./pages/MarketDetail";
-import Alerts from "./pages/Alerts";
 import { pageTransition } from "./lib/motion";
+
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const TraderDetail = lazy(() => import("./pages/TraderDetail"));
+const Activity = lazy(() => import("./pages/Activity"));
+const MarketDetail = lazy(() => import("./pages/MarketDetail"));
+const Alerts = lazy(() => import("./pages/Alerts"));
 
 export default function App() {
   const location = useLocation();
@@ -15,6 +17,7 @@ export default function App() {
   return (
     <AuthGate>
     <Layout>
+      <Suspense fallback={null}>
       <AnimatePresence mode="wait">
         <motion.div
           key={location.pathname}
@@ -32,6 +35,7 @@ export default function App() {
           </Routes>
         </motion.div>
       </AnimatePresence>
+      </Suspense>
     </Layout>
     </AuthGate>
   );
