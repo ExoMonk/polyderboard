@@ -24,7 +24,7 @@ interface Props {
   bidAsk: BidAsk;
 }
 
-const WINDOWS = { "1m": 60, "5m": 300 } as const;
+const WINDOWS = { "5m": 300, "15m": 900 } as const;
 type TimeWindow = keyof typeof WINDOWS;
 
 function toSec(ms: number): UTCTimestamp {
@@ -57,6 +57,7 @@ export default function LivePriceChart({
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const polyRef = useRef<ISeriesApi<"Area"> | null>(null);
+  const noRef = useRef<ISeriesApi<"Line"> | null>(null);
   const chainRef = useRef<ISeriesApi<"Line"> | null>(null);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
@@ -64,6 +65,8 @@ export default function LivePriceChart({
   const latestRef = useRef<number | null>(null);
   const animRef = useRef<number | null>(null); // current lerp'd value
   const rangeSetRef = useRef(false); // whether initial range has been set
+  const polyInitRef = useRef(false); // whether poly series has initial data
+  const prevTradeCountRef = useRef(0); // track trade count for incremental updates
   const windowRef = useRef<TimeWindow>("5m");
   const [timeWindow, setTimeWindow] = useState<TimeWindow>("5m");
 
@@ -111,7 +114,10 @@ export default function LivePriceChart({
         rightOffset: 5,
         shiftVisibleRangeOnNewBar: true,
       },
-      rightPriceScale: { borderVisible: false },
+      rightPriceScale: {
+        borderVisible: false,
+        scaleMargins: { top: 0, bottom: 0 },
+      },
       handleScroll: { mouseWheel: true, pressedMouseMove: true },
       handleScale: { mouseWheel: true, pinch: true },
     });
@@ -131,9 +137,28 @@ export default function LivePriceChart({
       crosshairMarkerRadius: 5,
       crosshairMarkerBorderColor: "#00ff88",
       crosshairMarkerBackgroundColor: "rgba(10, 18, 40, 0.9)",
+      // Fix Y axis to 0¢–100¢
+      autoscaleInfoProvider: () => ({
+        priceRange: { minValue: 0, maxValue: 100 },
+      }),
     });
 
-    // Series 2 — On-chain indexed trades (small markers only, no line)
+    // Series 2 — No/complement price (red line, no fill)
+    const no = chart.addSeries(LineSeries, {
+      color: "rgba(255, 51, 102, 0.5)",
+      lineWidth: 1,
+      lineType: LineType.Curved,
+      priceFormat: {
+        type: "custom",
+        formatter: (p: number) => `${p.toFixed(1)}\u00a2`,
+      },
+      crosshairMarkerVisible: false,
+      autoscaleInfoProvider: () => ({
+        priceRange: { minValue: 0, maxValue: 100 },
+      }),
+    });
+
+    // Series 3 — On-chain indexed trades (small markers only, no line)
     const chain = chart.addSeries(LineSeries, {
       color: "#3b82f6",
       lineWidth: 1,
@@ -153,6 +178,7 @@ export default function LivePriceChart({
 
     chartRef.current = chart;
     polyRef.current = poly;
+    noRef.current = no;
     chainRef.current = chain;
     markersRef.current = markers;
 
@@ -262,6 +288,7 @@ export default function LivePriceChart({
 
         const now = toSec(Date.now());
         poly.update({ time: now, value: animRef.current });
+        no.update({ time: now, value: 100 - animRef.current });
 
         // Position glowing dot at leading edge
         const x = chart.timeScale().timeToCoordinate(now);
@@ -289,19 +316,38 @@ export default function LivePriceChart({
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Update data on priceHistory / tradeMarkers change ─────────────
+  // Poly series: seed once with historical data, then the 60fps lerp loop is
+  // the sole writer. This avoids setData() full-redraws and "Cannot update
+  // oldest data" errors (the lerp loop's "now" bar is always the latest).
   useEffect(() => {
     if (!polyRef.current || !chainRef.current || !markersRef.current) return;
 
-    const allData = buildSeries(priceHistory);
-    polyRef.current.setData(allData);
+    // Seed poly + no series on first data, and re-seed when new on-chain trades arrive.
+    // Between trades, the 60fps lerp loop is the sole writer (smooth animation).
+    const tradeCount = tradeMarkers.size;
+    const needsReseed =
+      !polyInitRef.current ||
+      (tradeCount > prevTradeCountRef.current && polyInitRef.current);
 
-    // Re-extend to "now" immediately with lerped value so setData doesn't cause a flash
-    const now = toSec(Date.now());
-    const extendVal = animRef.current ?? latestRef.current;
-    if (allData.length > 0 && extendVal != null && allData[allData.length - 1].time < now) {
-      polyRef.current.update({ time: now, value: extendVal });
+    if (needsReseed && priceHistory.length > 0) {
+      const allData = buildSeries(priceHistory);
+      if (allData.length > 0) {
+        polyRef.current.setData(allData);
+        noRef.current?.setData(
+          allData.map((d) => ({ time: d.time, value: 100 - d.value })),
+        );
+        // Extend to "now" with current lerped value to prevent visual snap
+        if (animRef.current != null) {
+          const now = toSec(Date.now());
+          polyRef.current.update({ time: now, value: animRef.current });
+          noRef.current?.update({ time: now, value: 100 - animRef.current });
+        }
+        polyInitRef.current = true;
+      }
     }
+    prevTradeCountRef.current = tradeCount;
 
+    // Chain series (on-chain trade dots) — setData is fine, no visible line
     const chainData = buildSeries(priceHistory, tradeMarkers);
     chainRef.current.setData(chainData);
 
@@ -316,8 +362,9 @@ export default function LivePriceChart({
     );
 
     // Set visible range only once on initial data load
-    if (!rangeSetRef.current && chartRef.current && allData.length >= 2) {
+    if (!rangeSetRef.current && chartRef.current && priceHistory.length >= 2) {
       rangeSetRef.current = true;
+      const now = toSec(Date.now());
       try {
         const sec = WINDOWS[windowRef.current];
         chartRef.current.timeScale().setVisibleRange({
@@ -438,7 +485,11 @@ export default function LivePriceChart({
       <div className="flex items-center justify-center gap-6 mt-3">
         <span className="flex items-center gap-1.5 text-xs">
           <span className="w-4 h-0.5 bg-[var(--neon-green)] rounded" />
-          <span className="text-[var(--text-secondary)]">Polymarket</span>
+          <span className="text-[var(--text-secondary)]">Yes</span>
+        </span>
+        <span className="flex items-center gap-1.5 text-xs">
+          <span className="w-4 h-0.5 bg-[#ff3366] opacity-50 rounded" />
+          <span className="text-[var(--text-secondary)]">No</span>
         </span>
         <span className="flex items-center gap-1.5 text-xs">
           <span className="w-4 h-0.5 bg-[#3b82f6] rounded" />

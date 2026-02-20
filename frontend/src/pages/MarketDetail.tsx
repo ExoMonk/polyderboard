@@ -76,11 +76,16 @@ export default function MarketDetail() {
     prevIdsRef.current = currentIds;
   }, [mergedTrades]);
 
-  // Derive Yes/No token IDs (stable across renders)
-  const { yesTokenId, noTokenId } = useMemo(() => {
+  // Derive primary/secondary token IDs (stable across renders).
+  // For Yes/No markets: yesTokenId=Yes, noTokenId=No.
+  // For non-binary markets (e.g. "Finland"/"Canada"): yesTokenId=URL token,
+  // noTokenId=complement from Gamma API's all_token_ids.
+  const { yesTokenId, noTokenId, outcomeLabels } = useMemo(() => {
     let yes: string | null = null;
     let no: string | null = null;
+    let labels: [string, string] = ["Yes", "No"];
 
+    // Try to identify tokens from trade outcomes
     if (data && data.trades.length > 0) {
       const latestByToken = new Map<string, (typeof data.trades)[0]>();
       for (const t of data.trades) {
@@ -93,16 +98,64 @@ export default function MarketDetail() {
       }
     }
 
+    // Standard Yes/No fallback
     if (!yes && !no && tokenList.length >= 2) {
       yes = tokenList[0];
       no = tokenList[1];
     } else if (!yes && no) {
       yes = tokenList.find((id) => id !== no) || null;
+      // URL only has the No token — find the Yes complement from resolved data
+      if (!yes) {
+        const noInfo = resolved?.[no];
+        if (noInfo && noInfo.all_token_ids?.length >= 2) {
+          yes = noInfo.all_token_ids.find((id) => id !== no) || null;
+        }
+      }
     } else if (yes && !no) {
       no = tokenList.find((id) => id !== yes) || null;
+      // URL only has the Yes token — find the No complement from resolved data
+      if (!no) {
+        const yesInfo = resolved?.[yes];
+        if (yesInfo && yesInfo.all_token_ids?.length >= 2) {
+          no = yesInfo.all_token_ids.find((id) => id !== yes) || null;
+        }
+      }
     }
 
-    return { yesTokenId: yes, noTokenId: no };
+    // Non-binary market: neither "yes" nor "no" found in outcomes.
+    // Use the URL token as primary and find its complement from resolved data.
+    if (!yes && !no && tokenList.length === 1) {
+      const urlToken = tokenList[0];
+      const info = resolved?.[urlToken];
+      if (info && info.all_token_ids?.length >= 2) {
+        yes = urlToken;
+        no = info.all_token_ids.find((id) => id !== urlToken) || null;
+        // Set outcome labels from Gamma API
+        const yesIdx = info.all_token_ids.indexOf(urlToken);
+        const noIdx = no ? info.all_token_ids.indexOf(no) : -1;
+        labels = [
+          yesIdx >= 0 ? info.outcomes[yesIdx] || "Yes" : "Yes",
+          noIdx >= 0 ? info.outcomes[noIdx] || "No" : "No",
+        ];
+      } else {
+        // Single-token, no complement available — still use it as primary
+        yes = urlToken;
+      }
+    }
+
+    // Derive labels for standard Yes/No detection too
+    if (yes && no && labels[0] === "Yes" && labels[1] === "No") {
+      const yesInfo = resolved?.[yes];
+      if (yesInfo && yesInfo.outcomes?.length >= 2) {
+        const yesIdx = yesInfo.all_token_ids?.indexOf(yes) ?? -1;
+        const noIdx = yesInfo.all_token_ids?.indexOf(no) ?? -1;
+        const yLabel = yesIdx >= 0 ? yesInfo.outcomes[yesIdx] : "";
+        const nLabel = noIdx >= 0 ? yesInfo.outcomes[noIdx] : "";
+        if (yLabel && nLabel) labels = [yLabel, nLabel];
+      }
+    }
+
+    return { yesTokenId: yes, noTokenId: no, outcomeLabels: labels };
   }, [data, resolved, tokenList]);
 
   // Polymarket WSS for live price stream + our trades merged into one timeline
@@ -163,7 +216,7 @@ export default function MarketDetail() {
           animate="animate"
         >
           <StatCard label="Trades" value={formatNumber(mergedTrades.length)} />
-          <PriceBar yesPrice={liveYes} noPrice={liveNo} />
+          <PriceBar yesPrice={liveYes} noPrice={liveNo} labels={outcomeLabels} />
           <StatCard label="Last Trade" value={timeAgo(mergedTrades[0].block_timestamp)} />
         </motion.div>
       )}
@@ -303,7 +356,7 @@ function StatCard({ label, value }: { label: string; value: string }) {
   );
 }
 
-function PriceBar({ yesPrice, noPrice }: { yesPrice: number; noPrice: number }) {
+function PriceBar({ yesPrice, noPrice, labels = ["Yes", "No"] }: { yesPrice: number; noPrice: number; labels?: [string, string] }) {
   const yesPct = isNaN(yesPrice) ? 50 : Math.round(yesPrice * 100);
   const noPct = isNaN(noPrice) ? 50 : Math.round(noPrice * 100);
 
@@ -314,10 +367,10 @@ function PriceBar({ yesPrice, noPrice }: { yesPrice: number; noPrice: number }) 
       </div>
       <div className="flex items-center justify-between mb-2">
         <span className="text-sm font-bold text-[var(--neon-green)]">
-          Yes {yesPct}&cent;
+          {labels[0]} {yesPct}&cent;
         </span>
         <span className="text-sm font-bold text-[var(--neon-red)]">
-          No {noPct}&cent;
+          {labels[1]} {noPct}&cent;
         </span>
       </div>
       <div className="flex h-2 rounded-full overflow-hidden gap-0.5">

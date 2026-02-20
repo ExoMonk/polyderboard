@@ -116,6 +116,8 @@ export interface ResolvedMarket {
   category: string;
   active: boolean;
   gamma_token_id: string;
+  all_token_ids: string[];
+  outcomes: string[];
 }
 
 // Smart Money Signal
