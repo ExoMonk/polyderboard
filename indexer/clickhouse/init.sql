@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS poly_dearboard_ctf_exchange.order_filled (
     log_index         UInt64,
 
     INDEX idx_block_num (block_number) TYPE minmax GRANULARITY 1,
-    INDEX idx_timestamp (block_timestamp) TYPE bloom_filter GRANULARITY 1,
+    INDEX idx_timestamp (block_timestamp) TYPE minmax GRANULARITY 1,
     INDEX idx_network (network) TYPE bloom_filter GRANULARITY 1,
     INDEX idx_tx_hash (tx_hash) TYPE bloom_filter GRANULARITY 1
 ) ENGINE = ReplacingMergeTree
@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS poly_dearboard_neg_risk_ctf_exchange.order_filled (
     log_index         UInt64,
 
     INDEX idx_block_num (block_number) TYPE minmax GRANULARITY 1,
-    INDEX idx_timestamp (block_timestamp) TYPE bloom_filter GRANULARITY 1,
+    INDEX idx_timestamp (block_timestamp) TYPE minmax GRANULARITY 1,
     INDEX idx_network (network) TYPE bloom_filter GRANULARITY 1,
     INDEX idx_tx_hash (tx_hash) TYPE bloom_filter GRANULARITY 1
 ) ENGINE = ReplacingMergeTree
@@ -91,7 +91,7 @@ CREATE TABLE IF NOT EXISTS poly_dearboard_conditional_tokens.payout_redemption (
     log_index         UInt64,
 
     INDEX idx_block_num (block_number) TYPE minmax GRANULARITY 1,
-    INDEX idx_timestamp (block_timestamp) TYPE bloom_filter GRANULARITY 1,
+    INDEX idx_timestamp (block_timestamp) TYPE minmax GRANULARITY 1,
     INDEX idx_network (network) TYPE bloom_filter GRANULARITY 1,
     INDEX idx_tx_hash (tx_hash) TYPE bloom_filter GRANULARITY 1
 ) ENGINE = ReplacingMergeTree
@@ -113,7 +113,7 @@ CREATE TABLE IF NOT EXISTS poly_dearboard_conditional_tokens.condition_resolutio
     log_index           UInt64,
 
     INDEX idx_block_num (block_number) TYPE minmax GRANULARITY 1,
-    INDEX idx_timestamp (block_timestamp) TYPE bloom_filter GRANULARITY 1,
+    INDEX idx_timestamp (block_timestamp) TYPE minmax GRANULARITY 1,
     INDEX idx_condition_id (condition_id) TYPE bloom_filter GRANULARITY 1,
     INDEX idx_tx_hash (tx_hash) TYPE bloom_filter GRANULARITY 1
 ) ENGINE = ReplacingMergeTree
@@ -126,9 +126,9 @@ ORDER BY (network, block_number, tx_hash, log_index);
 CREATE DATABASE IF NOT EXISTS poly_dearboard;
 
 CREATE TABLE IF NOT EXISTS poly_dearboard.trades (
-    exchange          String,
+    exchange          LowCardinality(String),
     trader            FixedString(42),
-    side              String,
+    side              LowCardinality(String),
     asset_id          String,
     amount            Decimal128(6),
     price             Decimal128(10),
@@ -139,7 +139,10 @@ CREATE TABLE IF NOT EXISTS poly_dearboard.trades (
     block_number      UInt64,
     block_timestamp   Nullable(DateTime('UTC')),
     log_index         UInt64,
-    network           String
+    network           LowCardinality(String),
+
+    INDEX idx_block_ts (block_timestamp) TYPE minmax GRANULARITY 1,
+    INDEX idx_asset_id (asset_id) TYPE bloom_filter GRANULARITY 1
 ) ENGINE = ReplacingMergeTree
 ORDER BY (trader, block_number, tx_hash, log_index, side);
 
