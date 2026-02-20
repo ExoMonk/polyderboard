@@ -242,3 +242,148 @@ CREATE TABLE IF NOT EXISTS poly_dearboard.resolved_prices (
     block_number   UInt64
 ) ENGINE = ReplacingMergeTree
 ORDER BY (asset_id);
+
+-- =============================================================================
+-- 5. Pre-aggregated tables + materialized views
+--
+--    These tables are fed by MVs from the trades table and persist permanently.
+--    They enable a 3-day TTL on raw trades while preserving all historical
+--    aggregates (PnL, positions, stats).
+-- =============================================================================
+
+-- ── Latest price per asset (replaces the `latest_prices` CTE) ───────────────
+
+CREATE TABLE IF NOT EXISTS poly_dearboard.asset_latest_price (
+    asset_id     String,
+    latest_price Decimal128(10),
+    version      UInt64           -- block_number * 1000000 + log_index
+) ENGINE = ReplacingMergeTree(version)
+ORDER BY (asset_id);
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS poly_dearboard.mv_asset_latest_price
+TO poly_dearboard.asset_latest_price AS
+SELECT
+    asset_id,
+    price AS latest_price,
+    block_number * 1000000 + log_index AS version
+FROM poly_dearboard.trades;
+
+-- ── Per-trader per-asset positions (replaces the `positions` CTE) ───────────
+
+CREATE TABLE IF NOT EXISTS poly_dearboard.trader_positions (
+    trader       FixedString(42),
+    asset_id     String,
+    buy_amount   SimpleAggregateFunction(sum, Decimal128(6)),
+    sell_amount  SimpleAggregateFunction(sum, Decimal128(6)),
+    buy_usdc     SimpleAggregateFunction(sum, Decimal128(6)),
+    sell_usdc    SimpleAggregateFunction(sum, Decimal128(6)),
+    total_volume SimpleAggregateFunction(sum, Decimal128(6)),
+    total_fee    SimpleAggregateFunction(sum, Decimal128(6)),
+    trade_count  SimpleAggregateFunction(sum, UInt64),
+    first_ts     SimpleAggregateFunction(min, Nullable(DateTime('UTC'))),
+    last_ts      SimpleAggregateFunction(max, Nullable(DateTime('UTC')))
+) ENGINE = AggregatingMergeTree
+ORDER BY (trader, asset_id);
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS poly_dearboard.mv_trader_positions
+TO poly_dearboard.trader_positions AS
+SELECT
+    trader,
+    asset_id,
+    sumIf(amount, side = 'buy') AS buy_amount,
+    sumIf(amount, side = 'sell') AS sell_amount,
+    sumIf(usdc_amount, side = 'buy') AS buy_usdc,
+    sumIf(usdc_amount, side = 'sell') AS sell_usdc,
+    sum(usdc_amount) AS total_volume,
+    sum(fee) AS total_fee,
+    toUInt64(count()) AS trade_count,
+    min(if(block_timestamp = toDateTime('1970-01-01 00:00:00'), NULL, block_timestamp)) AS first_ts,
+    max(if(block_timestamp = toDateTime('1970-01-01 00:00:00'), NULL, block_timestamp)) AS last_ts
+FROM poly_dearboard.trades
+GROUP BY trader, asset_id;
+
+-- ── Global stats (for health endpoint) ──────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS poly_dearboard.global_stats (
+    key             UInt8 DEFAULT 1,
+    trade_count     SimpleAggregateFunction(sum, UInt64),
+    unique_traders  AggregateFunction(uniqExact, FixedString(42)),
+    latest_block    SimpleAggregateFunction(max, UInt64)
+) ENGINE = AggregatingMergeTree
+ORDER BY (key);
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS poly_dearboard.mv_global_stats
+TO poly_dearboard.global_stats AS
+SELECT
+    toUInt8(1) AS key,
+    toUInt64(count()) AS trade_count,
+    uniqExactState(trader) AS unique_traders,
+    max(block_number) AS latest_block
+FROM poly_dearboard.trades
+WHERE trader NOT IN (
+    '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E',
+    '0xC5d563A36AE78145C45a50134d48A1215220f80a',
+    '0x02A86f51aA7B8b1c17c30364748d5Ae4a0727E23'
+)
+GROUP BY key;
+
+-- ── Daily PnL snapshots (for pnl_chart beyond 3-day window) ─────────────────
+
+CREATE TABLE IF NOT EXISTS poly_dearboard.pnl_daily (
+    trader           FixedString(42),
+    day              Date,
+    asset_id         String,
+    buy_amount       SimpleAggregateFunction(sum, Float64),
+    sell_amount      SimpleAggregateFunction(sum, Float64),
+    buy_usdc         SimpleAggregateFunction(sum, Float64),
+    sell_usdc        SimpleAggregateFunction(sum, Float64),
+    last_price_state AggregateFunction(argMax, Float64, UInt64)
+) ENGINE = AggregatingMergeTree
+ORDER BY (trader, day, asset_id);
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS poly_dearboard.mv_pnl_daily
+TO poly_dearboard.pnl_daily AS
+SELECT
+    trader,
+    toDate(block_timestamp) AS day,
+    asset_id,
+    sumIf(toFloat64(amount), side = 'buy') AS buy_amount,
+    sumIf(toFloat64(amount), side = 'sell') AS sell_amount,
+    sumIf(toFloat64(usdc_amount), side = 'buy') AS buy_usdc,
+    sumIf(toFloat64(usdc_amount), side = 'sell') AS sell_usdc,
+    argMaxState(toFloat64(price), block_number * 1000000 + log_index) AS last_price_state
+FROM poly_dearboard.trades
+WHERE block_timestamp > toDateTime('1970-01-01 00:00:00')
+GROUP BY trader, day, asset_id;
+
+-- ── Daily asset stats (for hot_markets beyond 3-day window) ─────────────────
+
+CREATE TABLE IF NOT EXISTS poly_dearboard.asset_stats_daily (
+    day              Date,
+    asset_id         String,
+    volume           SimpleAggregateFunction(sum, Decimal128(6)),
+    trade_count      SimpleAggregateFunction(sum, UInt64),
+    unique_traders   AggregateFunction(uniqExact, FixedString(42)),
+    last_price_state AggregateFunction(argMax, Decimal128(10), UInt64),
+    last_trade       SimpleAggregateFunction(max, Nullable(DateTime('UTC')))
+) ENGINE = AggregatingMergeTree
+ORDER BY (day, asset_id);
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS poly_dearboard.mv_asset_stats_daily
+TO poly_dearboard.asset_stats_daily AS
+SELECT
+    toDate(block_timestamp) AS day,
+    asset_id,
+    sum(usdc_amount) AS volume,
+    toUInt64(count()) AS trade_count,
+    uniqExactState(trader) AS unique_traders,
+    argMaxState(price, block_number * 1000000 + log_index) AS last_price_state,
+    max(block_timestamp) AS last_trade
+FROM poly_dearboard.trades
+WHERE trader NOT IN (
+    '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E',
+    '0xC5d563A36AE78145C45a50134d48A1215220f80a',
+    '0x02A86f51aA7B8b1c17c30364748d5Ae4a0727E23'
+)
+AND block_timestamp > toDateTime('1970-01-01 00:00:00')
+GROUP BY day, asset_id;
