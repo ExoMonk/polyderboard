@@ -78,7 +78,7 @@ pub async fn leaderboard(
                 ifNull(toString(min(p.first_ts)), '') AS first_trade,
                 ifNull(toString(max(p.last_ts)), '') AS last_trade
             FROM poly_dearboard.trader_positions p
-            LEFT JOIN (SELECT * FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
+            LEFT JOIN (SELECT asset_id, latest_price FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
             LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
             WHERE p.trader NOT IN ({exclude})
             GROUP BY p.trader
@@ -105,9 +105,9 @@ pub async fn leaderboard(
         (traders, total)
     } else {
         // Time-windowed (1h/24h): read from raw trades (within TTL) + asset_latest_price
-        let time_filter = match timeframe {
-            "1h" => "AND block_timestamp >= now() - INTERVAL 1 HOUR",
-            "24h" => "AND block_timestamp >= now() - INTERVAL 24 HOUR",
+        let prewhere = match timeframe {
+            "1h" => "PREWHERE block_timestamp >= now() - INTERVAL 1 HOUR",
+            "24h" => "PREWHERE block_timestamp >= now() - INTERVAL 24 HOUR",
             _ => "",
         };
 
@@ -134,7 +134,8 @@ pub async fn leaderboard(
                            min(if(block_timestamp = toDateTime('1970-01-01 00:00:00'), NULL, block_timestamp)) AS first_ts,
                            max(if(block_timestamp = toDateTime('1970-01-01 00:00:00'), NULL, block_timestamp)) AS last_ts
                     FROM poly_dearboard.trades
-                    WHERE trader NOT IN ({exclude}) {time_filter}
+                    {prewhere}
+                    WHERE trader NOT IN ({exclude})
                     GROUP BY trader, asset_id
                 )
             SELECT
@@ -147,7 +148,7 @@ pub async fn leaderboard(
                 ifNull(toString(min(p.first_ts)), '') AS first_trade,
                 ifNull(toString(max(p.last_ts)), '') AS last_trade
             FROM positions p
-            LEFT JOIN (SELECT * FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
+            LEFT JOIN (SELECT asset_id, latest_price FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
             LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
             GROUP BY p.trader
             ORDER BY {sort_expr} {order}
@@ -166,7 +167,7 @@ pub async fn leaderboard(
         let total: u64 = state
             .db
             .query(&format!(
-                "SELECT uniqExact(trader) FROM poly_dearboard.trades WHERE trader NOT IN ({exclude}) {time_filter}"
+                "SELECT uniqExact(trader) FROM poly_dearboard.trades {prewhere} WHERE trader NOT IN ({exclude})"
             ))
             .fetch_one()
             .await
@@ -206,7 +207,7 @@ pub async fn trader_stats(
                 ifNull(toString(min(p.first_ts)), '') AS first_trade,
                 ifNull(toString(max(p.last_ts)), '') AS last_trade
             FROM poly_dearboard.trader_positions p
-            LEFT JOIN (SELECT * FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
+            LEFT JOIN (SELECT asset_id, latest_price FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
             LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
             WHERE lower(p.trader) = ?
             GROUP BY p.trader",
@@ -350,8 +351,8 @@ pub async fn hot_markets(
                 toString(argMax(price, block_number * 1000000 + log_index)) AS last_price,
                 ifNull(toString(max(block_timestamp)), '') AS last_trade
             FROM poly_dearboard.trades
-            WHERE block_timestamp >= now() - INTERVAL {interval}
-              AND trader NOT IN ({exclude})
+            PREWHERE block_timestamp >= now() - INTERVAL {interval}
+            WHERE trader NOT IN ({exclude})
             GROUP BY asset_id
             ORDER BY sum(usdc_amount) DESC
             LIMIT ?"
@@ -601,7 +602,7 @@ pub async fn trader_positions(
                 p.trade_count AS trade_count,
                 if(rp.resolved_price IS NOT NULL, 1, 0) AS on_chain_resolved
             FROM poly_dearboard.trader_positions p
-            LEFT JOIN (SELECT * FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
+            LEFT JOIN (SELECT asset_id, latest_price FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
             LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
             WHERE lower(p.trader) = ?
             ORDER BY abs((p.buy_amount - p.sell_amount) * coalesce(rp.resolved_price, toFloat64(lp.latest_price))) DESC",
@@ -759,9 +760,9 @@ pub async fn pnl_chart(
                 toString(sumIf(toFloat64(usdc_amount), side='sell') - sumIf(toFloat64(usdc_amount), side='buy')) AS cash_flow,
                 toString(argMax(toFloat64(price), block_number * 1000000 + log_index)) AS last_price
             FROM poly_dearboard.trades
-            WHERE lower(trader) = ?
-              AND block_timestamp > toDateTime('1970-01-01 00:00:00')
+            PREWHERE block_timestamp > toDateTime('1970-01-01 00:00:00')
               AND block_timestamp < now() - INTERVAL 24 HOUR
+            WHERE lower(trader) = ?
             GROUP BY asset_id"
         )
         .bind(&address)
@@ -786,9 +787,9 @@ pub async fn pnl_chart(
                 toString(sumIf(toFloat64(usdc_amount), side = 'sell') - sumIf(toFloat64(usdc_amount), side = 'buy')) AS cash_flow_delta,
                 toString(argMax(toFloat64(price), block_number * 1000000 + log_index)) AS last_price
             FROM poly_dearboard.trades
+            PREWHERE block_timestamp >= now() - INTERVAL 24 HOUR
             WHERE lower(trader) = ?
               AND block_timestamp > toDateTime('1970-01-01 00:00:00')
-              AND block_timestamp >= now() - INTERVAL 24 HOUR
             GROUP BY toStartOfHour(block_timestamp), asset_id
             ORDER BY toStartOfHour(block_timestamp), asset_id"
         )
@@ -946,7 +947,7 @@ pub async fn smart_money(
                     SELECT p.trader,
                            sum((p.sell_usdc - p.buy_usdc) + (p.buy_amount - p.sell_amount) * coalesce(rp.resolved_price, toFloat64(lp.latest_price))) AS total_pnl
                     FROM poly_dearboard.trader_positions p
-                    LEFT JOIN (SELECT * FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
+                    LEFT JOIN (SELECT asset_id, latest_price FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
                     LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
                     WHERE p.trader NOT IN ({exclude})
                     GROUP BY p.trader
@@ -959,7 +960,7 @@ pub async fn smart_money(
                            toFloat64(lp.latest_price) AS price,
                            toFloat64(p.buy_amount - p.sell_amount) * toFloat64(lp.latest_price) AS exposure
                     FROM poly_dearboard.trader_positions p
-                    LEFT JOIN (SELECT * FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
+                    LEFT JOIN (SELECT asset_id, latest_price FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
                     LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
                     WHERE p.trader IN (SELECT trader FROM trader_pnl)
                       AND rp.resolved_price IS NULL
@@ -989,9 +990,9 @@ pub async fn smart_money(
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     } else {
         // Time-windowed (1h/24h): read from raw trades (within TTL) + asset_latest_price
-        let time_filter = match timeframe {
-            "1h" => "AND block_timestamp >= now() - INTERVAL 1 HOUR",
-            "24h" => "AND block_timestamp >= now() - INTERVAL 24 HOUR",
+        let prewhere = match timeframe {
+            "1h" => "PREWHERE block_timestamp >= now() - INTERVAL 1 HOUR",
+            "24h" => "PREWHERE block_timestamp >= now() - INTERVAL 24 HOUR",
             _ => "",
         };
 
@@ -1009,11 +1010,11 @@ pub async fn smart_money(
                                sumIf(amount, side = 'buy') - sumIf(amount, side = 'sell') AS net_tokens,
                                sumIf(usdc_amount, side = 'sell') - sumIf(usdc_amount, side = 'buy') AS cash_flow
                         FROM poly_dearboard.trades
+                        {prewhere}
                         WHERE trader NOT IN ({exclude})
-                          {time_filter}
                         GROUP BY trader, asset_id
                     ) p
-                    LEFT JOIN (SELECT * FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
+                    LEFT JOIN (SELECT asset_id, latest_price FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
                     LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
                     GROUP BY trader
                     ORDER BY total_pnl DESC
@@ -1032,7 +1033,7 @@ pub async fn smart_money(
                         GROUP BY trader, asset_id
                         HAVING abs(net_tokens) > 0.01
                     ) p
-                    LEFT JOIN (SELECT * FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
+                    LEFT JOIN (SELECT asset_id, latest_price FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
                     LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
                     WHERE rp.resolved_price IS NULL
                       AND toFloat64(lp.latest_price) > 0.01
