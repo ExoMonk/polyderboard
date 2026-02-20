@@ -838,8 +838,16 @@ pub async fn verify_access_code(
 
 pub async fn smart_money(
     State(state): State<AppState>,
+    Query(params): Query<SmartMoneyParams>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let exclude = exclude_clause();
+    let top = params.top.unwrap_or(10).clamp(1, 50);
+
+    let time_filter = match params.timeframe.as_deref().unwrap_or("all") {
+        "1h" => "AND block_timestamp >= now() - INTERVAL 1 HOUR",
+        "24h" => "AND block_timestamp >= now() - INTERVAL 24 HOUR",
+        _ => "",
+    };
 
     let query = format!(
         "WITH
@@ -862,13 +870,14 @@ pub async fn smart_money(
                            sumIf(usdc_amount, side = 'sell') - sumIf(usdc_amount, side = 'buy') AS cash_flow
                     FROM poly_dearboard.trades
                     WHERE trader NOT IN ({exclude})
+                      {time_filter}
                     GROUP BY trader, asset_id
                 ) p
                 LEFT JOIN latest_prices lp ON p.asset_id = lp.asset_id
                 LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
                 GROUP BY trader
                 ORDER BY total_pnl DESC
-                LIMIT 10
+                LIMIT {top}
             ),
             smart_positions AS (
                 SELECT p.asset_id AS asset_id,
@@ -921,18 +930,15 @@ pub async fn smart_money(
     for r in rows {
         let info = market_info.get(&r.asset_id);
 
-        // Skip resolved/inactive markets (API knows before on-chain settlement)
-        if info.map(|i| !i.active).unwrap_or(false) {
+        // Skip resolved/inactive/uncached markets
+        if info.map(|i| !i.active).unwrap_or(true) {
             continue;
         }
 
-        let question = info
-            .map(|i| i.question.clone())
-            .unwrap_or_else(|| shorten_id(&r.asset_id));
-        let token_id = info
-            .map(|i| i.gamma_token_id.clone())
-            .unwrap_or_else(|| markets::to_integer_id(&r.asset_id));
-        let outcome = info.map(|i| i.outcome.clone()).unwrap_or_default();
+        let info = info.unwrap(); // safe: None handled above
+        let question = info.question.clone();
+        let token_id = info.gamma_token_id.clone();
+        let outcome = info.outcome.clone();
 
         let long_exp: f64 = r.long_exposure.parse().unwrap_or(0.0);
         let short_exp: f64 = r.short_exposure.parse().unwrap_or(0.0);
@@ -944,7 +950,6 @@ pub async fn smart_money(
             existing.short_exposure = format!("{:.6}", existing_short + short_exp);
             existing.long_count += r.long_count;
             existing.short_count += r.short_count;
-            // smart_trader_count: take max since same traders may hold both tokens
             existing.smart_trader_count = existing.smart_trader_count.max(r.smart_trader_count);
         } else {
             merged.insert(
@@ -980,7 +985,7 @@ pub async fn smart_money(
     });
     markets.truncate(10);
 
-    Ok(Json(SmartMoneyResponse { markets }))
+    Ok(Json(SmartMoneyResponse { markets, top }))
 }
 
 fn shorten_id(id: &str) -> String {

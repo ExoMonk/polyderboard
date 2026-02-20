@@ -266,6 +266,12 @@ pub struct ResolvedMarket {
 
 // -- Smart Money Signal --
 
+#[derive(Deserialize)]
+pub struct SmartMoneyParams {
+    pub top: Option<u32>,
+    pub timeframe: Option<String>,
+}
+
 #[derive(Row, Deserialize)]
 pub struct SmartMoneyRow {
     pub asset_id: String,
@@ -293,4 +299,5 @@ pub struct SmartMoneyMarket {
 #[derive(Serialize)]
 pub struct SmartMoneyResponse {
     pub markets: Vec<SmartMoneyMarket>,
+    pub top: u32,
 }
