@@ -42,6 +42,7 @@ export default function Layout({ children }: { children: ReactNode }) {
               { to: "/", label: "Leaderboard" },
               { to: "/activity", label: "Activity" },
               { to: "/alerts", label: "Alerts" },
+              { to: "/lab", label: "Lab" },
             ].map((link) => (
               <motion.div key={link.to} whileHover={{ y: -1 }} transition={{ duration: 0.15 }}>
                 <Link

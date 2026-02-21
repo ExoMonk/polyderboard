@@ -31,8 +31,7 @@ export default function useAlerts() {
       try {
         const alert: Alert = JSON.parse(event.data);
         setAlerts((prev) => {
-          // Dedup by tx_hash — rindexer may fire the same event twice
-          if (prev.some((a) => a.tx_hash === alert.tx_hash)) return prev;
+          if (prev.some((a) => a.tx_hash === alert.tx_hash && a.kind === alert.kind)) return prev;
           return [alert, ...prev].slice(0, MAX_ALERTS);
         });
       } catch {

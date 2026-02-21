@@ -100,7 +100,7 @@ export default function Alerts() {
               : "No alerts match this filter"}
           </div>
           <div className="text-[var(--text-secondary)]/50 text-xs mt-2">
-            Whale trades (&ge;$50k), market resolutions, and failed settlements appear here in real time
+            Whale trades, market resolutions, and failed settlements appear here in real time
           </div>
         </div>
       ) : (

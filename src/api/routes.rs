@@ -1875,6 +1875,537 @@ fn compute_labels(
     (labels, details)
 }
 
+// ---------------------------------------------------------------------------
+// PolyLab Backtest
+// ---------------------------------------------------------------------------
+
+#[derive(clickhouse::Row, serde::Deserialize)]
+struct TopTraderRow {
+    address: String,
+}
+
+pub async fn backtest(
+    State(state): State<AppState>,
+    Json(req): Json<BacktestRequest>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let top_n = req.top_n.clamp(1, 50);
+    let timeframe = match req.timeframe.as_str() {
+        "7d" | "30d" | "all" => req.timeframe.as_str(),
+        _ => return Err((StatusCode::BAD_REQUEST, "timeframe must be 7d, 30d, or all".into())),
+    };
+    let initial_capital = req.initial_capital.unwrap_or(10_000.0).clamp(100.0, 1_000_000.0);
+    let copy_pct = req.copy_pct.unwrap_or(1.0).clamp(0.01, 1.0);
+    let user_allocation = initial_capital * copy_pct;
+    let per_trader_budget = user_allocation / top_n as f64;
+
+    // 1) Resolve top N traders by PnL
+    let exclude = exclude_clause();
+    let top_query = format!(
+        "WITH resolved AS (
+            SELECT asset_id, toNullable(toFloat64(resolved_price)) AS resolved_price
+            FROM poly_dearboard.resolved_prices FINAL
+        )
+        SELECT toString(p.trader) AS address
+        FROM poly_dearboard.trader_positions p
+        LEFT JOIN (SELECT asset_id, latest_price FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
+        LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
+        WHERE p.trader NOT IN ({exclude})
+        GROUP BY p.trader
+        ORDER BY sum((p.sell_usdc - p.buy_usdc) + (p.buy_amount - p.sell_amount) * coalesce(rp.resolved_price, toFloat64(lp.latest_price))) DESC
+        LIMIT {top_n}"
+    );
+
+    let trader_rows = state.db.query(&top_query)
+        .fetch_all::<TopTraderRow>()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let config = BacktestConfig {
+        initial_capital,
+        copy_pct,
+        top_n,
+        timeframe: timeframe.to_string(),
+        per_trader_budget,
+    };
+
+    if trader_rows.is_empty() {
+        return Ok(Json(BacktestResponse {
+            portfolio_curve: vec![],
+            pnl_curve: vec![],
+            summary: BacktestSummary {
+                total_pnl: "0.00".into(),
+                total_return_pct: 0.0,
+                win_rate: 0.0,
+                max_drawdown: "0.00".into(),
+                max_drawdown_pct: 0.0,
+                positions_count: 0,
+                traders_count: 0,
+                initial_capital,
+                final_value: initial_capital,
+            },
+            traders: vec![],
+            config,
+        }));
+    }
+
+    let addresses: Vec<String> = trader_rows.iter().map(|r| r.address.to_lowercase()).collect();
+    let in_list = addresses.iter().map(|a| format!("'{a}'")).collect::<Vec<_>>().join(",");
+
+    // 2) Fetch per-trader scaling data
+    let scale_rows = state.db.query(&format!(
+        "SELECT
+            toString(p.trader) AS address,
+            toString(ROUND(sum(p.buy_usdc) / count(), 6)) AS avg_position_size,
+            count() AS market_count
+        FROM poly_dearboard.trader_positions p
+        WHERE lower(p.trader) IN ({in_list})
+        GROUP BY p.trader"
+    ))
+    .fetch_all::<TraderScaleRow>()
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let mut trader_scales: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    for row in &scale_rows {
+        let avg_pos = row.avg_position_size.parse::<f64>().unwrap_or(1.0).max(1.0);
+        let scale = per_trader_budget / avg_pos;
+        trader_scales.insert(row.address.to_lowercase(), scale);
+    }
+
+    // 3) Build portfolio simulation from per-trader pnl_daily
+    let day_filter = match timeframe {
+        "7d" => Some(7),
+        "30d" => Some(30),
+        _ => None,
+    };
+
+    // Pre-window initial state (per-trader, for scaling)
+    let mut asset_state: std::collections::HashMap<String, (f64, f64, f64)> =
+        std::collections::HashMap::new();
+
+    if let Some(days) = day_filter {
+        let initial = state.db.query(&format!(
+            "SELECT
+                toString(trader) AS trader,
+                asset_id,
+                toString(sum(buy_amount) - sum(sell_amount)) AS net_tokens,
+                toString(sum(sell_usdc) - sum(buy_usdc)) AS cash_flow,
+                toString(argMaxMerge(last_price_state)) AS last_price
+            FROM poly_dearboard.pnl_daily
+            WHERE lower(trader) IN ({in_list})
+              AND day < today() - {days}
+            GROUP BY trader, asset_id"
+        ))
+        .fetch_all::<PnlInitialStateTraderRow>()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        for row in initial {
+            let scale = trader_scales.get(&row.trader.to_lowercase()).copied().unwrap_or(1.0);
+            let tokens = row.net_tokens.parse::<f64>().unwrap_or(0.0) * scale;
+            let cash = row.cash_flow.parse::<f64>().unwrap_or(0.0) * scale;
+            let price = row.last_price.parse::<f64>().unwrap_or(0.0);
+            let entry = asset_state.entry(row.asset_id.clone()).or_insert((0.0, 0.0, 0.0));
+            entry.0 += tokens;
+            entry.1 += cash;
+            entry.2 = price;
+        }
+    }
+
+    // Window deltas (per-trader for scaling)
+    let day_where = day_filter
+        .map(|d| format!("AND day >= today() - {d}"))
+        .unwrap_or_default();
+
+    let rows = state.db.query(&format!(
+        "SELECT
+            toString(trader) AS trader,
+            toString(day) AS date,
+            asset_id,
+            toString(sum(buy_amount) - sum(sell_amount)) AS net_token_delta,
+            toString(sum(sell_usdc) - sum(buy_usdc)) AS cash_flow_delta,
+            toString(argMaxMerge(last_price_state)) AS last_price
+        FROM poly_dearboard.pnl_daily
+        WHERE lower(trader) IN ({in_list})
+          {day_where}
+        GROUP BY trader, day, asset_id
+        ORDER BY day, trader, asset_id"
+    ))
+    .fetch_all::<PnlDailyTraderRow>()
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let resolved = fetch_resolved_prices(&state).await;
+
+    // Simulate portfolio with scaling
+    let portfolio_curve = simulate_portfolio(
+        &rows, &mut asset_state, &resolved, &trader_scales, initial_capital,
+    );
+
+    // Also build raw PnL curve for backward compat
+    let pnl_curve: Vec<PnlChartPoint> = portfolio_curve.iter()
+        .map(|p| PnlChartPoint { date: p.date.clone(), pnl: p.pnl.clone() })
+        .collect();
+
+    // 4) Summary stats
+    let final_value = portfolio_curve.last()
+        .and_then(|p| p.value.parse::<f64>().ok())
+        .unwrap_or(initial_capital);
+    let total_pnl = final_value - initial_capital;
+    let total_return_pct = if initial_capital > 0.0 { (total_pnl / initial_capital) * 100.0 } else { 0.0 };
+
+    // Max drawdown on portfolio value
+    let mut peak_value = initial_capital;
+    let mut max_dd: f64 = 0.0;
+    let mut max_dd_pct: f64 = 0.0;
+    for pt in &portfolio_curve {
+        let v = pt.value.parse::<f64>().unwrap_or(initial_capital);
+        if v > peak_value { peak_value = v; }
+        let dd = peak_value - v;
+        if dd > max_dd { max_dd = dd; }
+        let dd_pct = if peak_value > 0.0 { dd / peak_value * 100.0 } else { 0.0 };
+        if dd_pct > max_dd_pct { max_dd_pct = dd_pct; }
+    }
+
+    // Win rate + position count
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct WinRateRow {
+        total: u64,
+        wins: u64,
+    }
+    let wr = state.db.query(&format!(
+        "WITH resolved AS (
+            SELECT asset_id, toNullable(toFloat64(resolved_price)) AS resolved_price
+            FROM poly_dearboard.resolved_prices FINAL
+        )
+        SELECT
+            count() AS total,
+            countIf((p.sell_usdc - p.buy_usdc) + (p.buy_amount - p.sell_amount) * coalesce(rp.resolved_price, toFloat64(lp.latest_price)) > 0) AS wins
+        FROM poly_dearboard.trader_positions p
+        LEFT JOIN (SELECT asset_id, latest_price FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
+        LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
+        WHERE lower(p.trader) IN ({in_list})"
+    ))
+    .fetch_one::<WinRateRow>()
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let win_rate = if wr.total > 0 { (wr.wins as f64 / wr.total as f64) * 100.0 } else { 0.0 };
+
+    // 5) Per-trader breakdown with scaling
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct TraderPnlRow {
+        address: String,
+        pnl: String,
+        markets_traded: u64,
+    }
+    let trader_pnls = state.db.query(&format!(
+        "WITH resolved AS (
+            SELECT asset_id, toNullable(toFloat64(resolved_price)) AS resolved_price
+            FROM poly_dearboard.resolved_prices FINAL
+        )
+        SELECT
+            toString(p.trader) AS address,
+            toString(ROUND(sum((p.sell_usdc - p.buy_usdc) + (p.buy_amount - p.sell_amount) * coalesce(rp.resolved_price, toFloat64(lp.latest_price))), 6)) AS pnl,
+            count() AS markets_traded
+        FROM poly_dearboard.trader_positions p
+        LEFT JOIN (SELECT asset_id, latest_price FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
+        LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
+        WHERE lower(p.trader) IN ({in_list})
+        GROUP BY p.trader
+        ORDER BY sum((p.sell_usdc - p.buy_usdc) + (p.buy_amount - p.sell_amount) * coalesce(rp.resolved_price, toFloat64(lp.latest_price))) DESC"
+    ))
+    .fetch_all::<TraderPnlRow>()
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let total_scaled_abs: f64 = trader_pnls.iter().map(|t| {
+        let raw = t.pnl.parse::<f64>().unwrap_or(0.0);
+        let scale = trader_scales.get(&t.address.to_lowercase()).copied().unwrap_or(1.0);
+        (raw * scale).abs()
+    }).sum();
+
+    let traders: Vec<BacktestTrader> = trader_pnls.into_iter().enumerate().map(|(i, t)| {
+        let raw_pnl = t.pnl.parse::<f64>().unwrap_or(0.0);
+        let scale = trader_scales.get(&t.address.to_lowercase()).copied().unwrap_or(1.0);
+        let scaled = raw_pnl * scale;
+        BacktestTrader {
+            address: t.address,
+            rank: (i + 1) as u32,
+            pnl: t.pnl,
+            scaled_pnl: format!("{:.2}", scaled),
+            markets_traded: t.markets_traded,
+            contribution_pct: if total_scaled_abs > 0.0 { (scaled.abs() / total_scaled_abs) * 100.0 } else { 0.0 },
+            scale_factor: (scale * 1000.0).round() / 1000.0,
+        }
+    }).collect();
+
+    Ok(Json(BacktestResponse {
+        portfolio_curve,
+        pnl_curve,
+        summary: BacktestSummary {
+            total_pnl: format!("{:.2}", total_pnl),
+            total_return_pct: (total_return_pct * 10.0).round() / 10.0,
+            win_rate: (win_rate * 10.0).round() / 10.0,
+            max_drawdown: format!("{:.2}", max_dd),
+            max_drawdown_pct: (max_dd_pct * 10.0).round() / 10.0,
+            positions_count: wr.total,
+            traders_count: top_n,
+            initial_capital,
+            final_value: (final_value * 100.0).round() / 100.0,
+        },
+        traders,
+        config,
+    }))
+}
+
+/// Portfolio simulation with per-trader scaling and capital constraints.
+fn simulate_portfolio(
+    rows: &[PnlDailyTraderRow],
+    asset_state: &mut std::collections::HashMap<String, (f64, f64, f64)>,
+    resolved: &std::collections::HashMap<String, f64>,
+    trader_scales: &std::collections::HashMap<String, f64>,
+    initial_capital: f64,
+) -> Vec<PortfolioPoint> {
+    // Compute initial cash: initial_capital minus cost of pre-window positions
+    let pre_window_cost: f64 = asset_state.values().map(|(_, cash, _)| -cash).sum::<f64>().max(0.0);
+    let mut cash_balance = (initial_capital - pre_window_cost).max(0.0);
+
+    let mut points: Vec<PortfolioPoint> = Vec::new();
+    let mut current_date = String::new();
+
+    for row in rows {
+        if !current_date.is_empty() && row.date != current_date {
+            // Emit point for previous date
+            let positions_value: f64 = asset_state.values()
+                .map(|(tokens, _, price)| tokens * price)
+                .sum();
+            let total_value = cash_balance + positions_value;
+            let pnl = total_value - initial_capital;
+            points.push(PortfolioPoint {
+                date: current_date.clone(),
+                value: format!("{:.2}", total_value),
+                pnl: format!("{:.2}", pnl),
+                pnl_pct: format!("{:.2}", if initial_capital > 0.0 { pnl / initial_capital * 100.0 } else { 0.0 }),
+            });
+        }
+        current_date.clone_from(&row.date);
+
+        let scale = trader_scales.get(&row.trader.to_lowercase()).copied().unwrap_or(1.0);
+        let mut delta_tokens = row.net_token_delta.parse::<f64>().unwrap_or(0.0) * scale;
+        let mut delta_cash = row.cash_flow_delta.parse::<f64>().unwrap_or(0.0) * scale;
+        let price = row.last_price.parse::<f64>().unwrap_or(0.0);
+
+        // Capital constraint: if buying (delta_cash < 0), clip to available cash
+        if delta_cash < 0.0 {
+            let cost = -delta_cash;
+            if cost > cash_balance && cash_balance > 0.0 {
+                let clip = cash_balance / cost;
+                delta_tokens *= clip;
+                delta_cash *= clip;
+            } else if cash_balance <= 0.0 {
+                // No cash left — skip this buy
+                let entry = asset_state.entry(row.asset_id.clone()).or_insert((0.0, 0.0, 0.0));
+                entry.2 = price; // Still update price
+                continue;
+            }
+        }
+
+        cash_balance += delta_cash;
+        let entry = asset_state.entry(row.asset_id.clone()).or_insert((0.0, 0.0, 0.0));
+        entry.0 += delta_tokens;
+        entry.1 += delta_cash;
+        entry.2 = price;
+    }
+
+    // Final point with resolved prices
+    if !current_date.is_empty() {
+        let positions_value: f64 = asset_state.iter()
+            .map(|(asset_id, (tokens, _, price))| {
+                let final_price = resolved.get(asset_id).copied().unwrap_or(*price);
+                tokens * final_price
+            })
+            .sum();
+        let total_value = cash_balance + positions_value;
+        let pnl = total_value - initial_capital;
+        points.push(PortfolioPoint {
+            date: current_date,
+            value: format!("{:.2}", total_value),
+            pnl: format!("{:.2}", pnl),
+            pnl_pct: format!("{:.2}", if initial_capital > 0.0 { pnl / initial_capital * 100.0 } else { 0.0 }),
+        });
+    }
+
+    points
+}
+
+// ---------------------------------------------------------------------------
+// Copy Portfolio
+// ---------------------------------------------------------------------------
+
+pub async fn copy_portfolio(
+    State(state): State<AppState>,
+    Query(params): Query<CopyPortfolioParams>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let top = params.top.unwrap_or(10).clamp(5, 50);
+    let exclude = exclude_clause();
+
+    let query = format!(
+        "WITH
+            resolved AS (
+                SELECT asset_id, toNullable(toFloat64(resolved_price)) AS resolved_price
+                FROM poly_dearboard.resolved_prices FINAL
+            ),
+            trader_pnl AS (
+                SELECT p.trader,
+                       sum((p.sell_usdc - p.buy_usdc) + (p.buy_amount - p.sell_amount) * coalesce(rp.resolved_price, toFloat64(lp.latest_price))) AS total_pnl
+                FROM poly_dearboard.trader_positions p
+                LEFT JOIN (SELECT asset_id, latest_price FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
+                LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
+                WHERE p.trader NOT IN ({exclude})
+                GROUP BY p.trader
+                ORDER BY total_pnl DESC
+                LIMIT {top}
+            )
+        SELECT
+            toString(p.trader) AS trader,
+            p.asset_id AS asset_id,
+            toString(p.buy_amount - p.sell_amount) AS net_tokens,
+            toString(if(p.buy_amount > toDecimal128(0, 6),
+                ROUND(p.buy_usdc / p.buy_amount, 6),
+                toDecimal128(0, 6))) AS avg_entry,
+            toString(toFloat64(lp.latest_price)) AS latest_price,
+            toString(abs(toFloat64(p.buy_amount - p.sell_amount)) * toFloat64(lp.latest_price)) AS exposure,
+            toString(ROUND((p.sell_usdc - p.buy_usdc) + (p.buy_amount - p.sell_amount) * toFloat64(lp.latest_price), 6)) AS pnl
+        FROM poly_dearboard.trader_positions p
+        LEFT JOIN (SELECT asset_id, latest_price FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
+        LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
+        WHERE p.trader IN (SELECT trader FROM trader_pnl)
+          AND rp.resolved_price IS NULL
+          AND toFloat64(lp.latest_price) > 0.01
+          AND toFloat64(lp.latest_price) < 0.99
+          AND abs(p.buy_amount - p.sell_amount) > 0.01
+        ORDER BY abs(toFloat64(p.buy_amount - p.sell_amount)) * toFloat64(lp.latest_price) DESC"
+    );
+
+    let rows = state
+        .db
+        .query(&query)
+        .fetch_all::<CopyPortfolioRow>()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Market enrichment
+    let asset_ids: Vec<String> = rows.iter().map(|r| r.asset_id.clone()).collect();
+    let market_info =
+        markets::resolve_markets(&state.http, &state.market_cache, &asset_ids).await;
+
+    // Merge Yes/No tokens of the same market, aggregate per question
+    let mut merged: std::collections::HashMap<String, CopyPortfolioPosition> =
+        std::collections::HashMap::new();
+    // Track unique traders per market for convergence count
+    let mut traders_per_market: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
+
+    for r in &rows {
+        let info = match market_info.get(&r.asset_id) {
+            Some(i) if i.active => i,
+            _ => continue,
+        };
+
+        let question = info.question.clone();
+        let net: f64 = r.net_tokens.parse().unwrap_or(0.0);
+        let exposure: f64 = r.exposure.parse().unwrap_or(0.0);
+        let pnl: f64 = r.pnl.parse().unwrap_or(0.0);
+        let entry: f64 = r.avg_entry.parse().unwrap_or(0.0);
+        let is_long = net > 0.0;
+
+        let traders = traders_per_market.entry(question.clone()).or_default();
+        let is_new_trader = traders.insert(r.trader.clone());
+
+        if let Some(existing) = merged.get_mut(&question) {
+            let ex_exp: f64 = existing.total_exposure.parse().unwrap_or(0.0);
+            let ex_pnl: f64 = existing.total_pnl.parse().unwrap_or(0.0);
+            let ex_entry: f64 = existing.avg_entry.parse().unwrap_or(0.0);
+
+            let new_total_exp = ex_exp + exposure;
+            let weighted_entry = if new_total_exp > 0.0 {
+                (ex_exp * ex_entry + exposure * entry) / new_total_exp
+            } else {
+                0.0
+            };
+
+            existing.total_exposure = format!("{new_total_exp:.6}");
+            existing.total_pnl = format!("{:.6}", ex_pnl + pnl);
+            existing.avg_entry = format!("{weighted_entry:.6}");
+            // Only count unique traders for convergence
+            if is_new_trader {
+                if is_long {
+                    existing.long_count += 1;
+                } else {
+                    existing.short_count += 1;
+                }
+            }
+        } else {
+            merged.insert(
+                question.clone(),
+                CopyPortfolioPosition {
+                    token_id: info.gamma_token_id.clone(),
+                    question,
+                    outcome: info.outcome.clone(),
+                    convergence: 0, // set from HashSet len after loop
+                    long_count: if is_long { 1 } else { 0 },
+                    short_count: if !is_long { 1 } else { 0 },
+                    total_exposure: format!("{exposure:.6}"),
+                    avg_entry: format!("{entry:.6}"),
+                    latest_price: r.latest_price.clone(),
+                    total_pnl: format!("{pnl:.6}"),
+                },
+            );
+        }
+    }
+
+    // Set convergence from unique trader counts
+    for (question, pos) in merged.iter_mut() {
+        if let Some(traders) = traders_per_market.get(question) {
+            pos.convergence = traders.len() as u32;
+        }
+    }
+
+    // Sort by convergence DESC, then exposure DESC
+    let mut positions: Vec<CopyPortfolioPosition> = merged.into_values().collect();
+    positions.sort_by(|a, b| {
+        b.convergence
+            .cmp(&a.convergence)
+            .then_with(|| {
+                let a_exp: f64 = a.total_exposure.parse().unwrap_or(0.0);
+                let b_exp: f64 = b.total_exposure.parse().unwrap_or(0.0);
+                b_exp
+                    .partial_cmp(&a_exp)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+
+    let total_exposure: f64 = positions
+        .iter()
+        .map(|p| p.total_exposure.parse::<f64>().unwrap_or(0.0))
+        .sum();
+    let total_pnl: f64 = positions
+        .iter()
+        .map(|p| p.total_pnl.parse::<f64>().unwrap_or(0.0))
+        .sum();
+
+    let summary = CopyPortfolioSummary {
+        total_positions: positions.len() as u32,
+        unique_markets: positions.len() as u32,
+        total_exposure: format!("{total_exposure:.6}"),
+        total_pnl: format!("{total_pnl:.6}"),
+        top_n: top,
+    };
+
+    Ok(Json(CopyPortfolioResponse { positions, summary }))
+}
+
 fn shorten_id(id: &str) -> String {
     if id.len() <= 12 {
         id.to_string()

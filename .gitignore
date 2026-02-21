@@ -8,3 +8,5 @@ frontend/dist
 frontend/package-lock.json
 /specs
 deployments/polyderboard-prod
+tasks
+CLAUDE.md

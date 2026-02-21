@@ -414,3 +414,136 @@ pub struct SmartMoneyResponse {
     pub markets: Vec<SmartMoneyMarket>,
     pub top: u32,
 }
+
+// -- PolyLab Backtest --
+
+#[derive(Deserialize)]
+pub struct BacktestRequest {
+    pub top_n: u32,
+    pub timeframe: String,
+    pub initial_capital: Option<f64>,
+    pub copy_pct: Option<f64>,
+}
+
+#[derive(Row, Deserialize)]
+pub struct PnlDailyTraderRow {
+    pub trader: String,
+    pub date: String,
+    pub asset_id: String,
+    pub net_token_delta: String,
+    pub cash_flow_delta: String,
+    pub last_price: String,
+}
+
+#[derive(Row, Deserialize)]
+pub struct PnlInitialStateTraderRow {
+    pub trader: String,
+    pub asset_id: String,
+    pub net_tokens: String,
+    pub cash_flow: String,
+    pub last_price: String,
+}
+
+#[derive(Row, Deserialize)]
+pub struct TraderScaleRow {
+    pub address: String,
+    pub avg_position_size: String,
+    pub market_count: u64,
+}
+
+#[derive(Serialize)]
+pub struct PortfolioPoint {
+    pub date: String,
+    pub value: String,
+    pub pnl: String,
+    pub pnl_pct: String,
+}
+
+#[derive(Serialize)]
+pub struct BacktestConfig {
+    pub initial_capital: f64,
+    pub copy_pct: f64,
+    pub top_n: u32,
+    pub timeframe: String,
+    pub per_trader_budget: f64,
+}
+
+#[derive(Serialize)]
+pub struct BacktestResponse {
+    pub portfolio_curve: Vec<PortfolioPoint>,
+    pub pnl_curve: Vec<PnlChartPoint>,
+    pub summary: BacktestSummary,
+    pub traders: Vec<BacktestTrader>,
+    pub config: BacktestConfig,
+}
+
+#[derive(Serialize)]
+pub struct BacktestSummary {
+    pub total_pnl: String,
+    pub total_return_pct: f64,
+    pub win_rate: f64,
+    pub max_drawdown: String,
+    pub max_drawdown_pct: f64,
+    pub positions_count: u64,
+    pub traders_count: u32,
+    pub initial_capital: f64,
+    pub final_value: f64,
+}
+
+#[derive(Serialize)]
+pub struct BacktestTrader {
+    pub address: String,
+    pub rank: u32,
+    pub pnl: String,
+    pub scaled_pnl: String,
+    pub markets_traded: u64,
+    pub contribution_pct: f64,
+    pub scale_factor: f64,
+}
+
+// -- Copy Portfolio --
+
+#[derive(Deserialize)]
+pub struct CopyPortfolioParams {
+    pub top: Option<u32>,
+}
+
+#[derive(Row, Deserialize)]
+pub struct CopyPortfolioRow {
+    pub trader: String,
+    pub asset_id: String,
+    pub net_tokens: String,
+    pub avg_entry: String,
+    pub latest_price: String,
+    pub exposure: String,
+    pub pnl: String,
+}
+
+#[derive(Serialize)]
+pub struct CopyPortfolioPosition {
+    pub token_id: String,
+    pub question: String,
+    pub outcome: String,
+    pub convergence: u32,
+    pub long_count: u32,
+    pub short_count: u32,
+    pub total_exposure: String,
+    pub avg_entry: String,
+    pub latest_price: String,
+    pub total_pnl: String,
+}
+
+#[derive(Serialize)]
+pub struct CopyPortfolioSummary {
+    pub total_positions: u32,
+    pub unique_markets: u32,
+    pub total_exposure: String,
+    pub total_pnl: String,
+    pub top_n: u32,
+}
+
+#[derive(Serialize)]
+pub struct CopyPortfolioResponse {
+    pub positions: Vec<CopyPortfolioPosition>,
+    pub summary: CopyPortfolioSummary,
+}

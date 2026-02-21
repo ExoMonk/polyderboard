@@ -243,6 +243,83 @@ export interface FailedSettlementAlert {
 
 export type Alert = WhaleTradeAlert | MarketResolutionAlert | FailedSettlementAlert;
 
+// PolyLab Backtest
+
+export type BacktestTimeframe = "7d" | "30d" | "all";
+
+export interface PortfolioPoint {
+  date: string;
+  value: string;
+  pnl: string;
+  pnl_pct: string;
+}
+
+export interface BacktestConfig {
+  initial_capital: number;
+  copy_pct: number;
+  top_n: number;
+  timeframe: string;
+  per_trader_budget: number;
+}
+
+export interface BacktestSummary {
+  total_pnl: string;
+  total_return_pct: number;
+  win_rate: number;
+  max_drawdown: string;
+  max_drawdown_pct: number;
+  positions_count: number;
+  traders_count: number;
+  initial_capital: number;
+  final_value: number;
+}
+
+export interface BacktestTrader {
+  address: string;
+  rank: number;
+  pnl: string;
+  scaled_pnl: string;
+  markets_traded: number;
+  contribution_pct: number;
+  scale_factor: number;
+}
+
+export interface BacktestResponse {
+  portfolio_curve: PortfolioPoint[];
+  pnl_curve: PnlChartPoint[];
+  summary: BacktestSummary;
+  traders: BacktestTrader[];
+  config: BacktestConfig;
+}
+
+// Copy Portfolio
+
+export interface CopyPortfolioPosition {
+  token_id: string;
+  question: string;
+  outcome: string;
+  convergence: number;
+  long_count: number;
+  short_count: number;
+  total_exposure: string;
+  avg_entry: string;
+  latest_price: string;
+  total_pnl: string;
+}
+
+export interface CopyPortfolioSummary {
+  total_positions: number;
+  unique_markets: number;
+  total_exposure: string;
+  total_pnl: string;
+  top_n: number;
+}
+
+export interface CopyPortfolioResponse {
+  positions: CopyPortfolioPosition[];
+  summary: CopyPortfolioSummary;
+}
+
 // Polymarket WebSocket (live market data)
 
 export interface PricePoint {

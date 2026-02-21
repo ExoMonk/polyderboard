@@ -10,6 +10,9 @@ import type {
   ResolvedMarket,
   SmartMoneyResponse,
   TraderProfile,
+  BacktestResponse,
+  BacktestTimeframe,
+  CopyPortfolioResponse,
   SortColumn,
   SortOrder,
   Timeframe,
@@ -114,6 +117,26 @@ export async function fetchTraderProfile(address: string): Promise<TraderProfile
   return res.json();
 }
 
+export async function fetchBacktest(params: {
+  topN: number;
+  timeframe: BacktestTimeframe;
+  initialCapital?: number;
+  copyPct?: number;
+}): Promise<BacktestResponse> {
+  const res = await fetch(`${BASE}/lab/backtest`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      top_n: params.topN,
+      timeframe: params.timeframe,
+      initial_capital: params.initialCapital,
+      copy_pct: params.copyPct,
+    }),
+  });
+  if (!res.ok) throw new Error(`Backtest fetch failed: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchSmartMoney(params?: {
   timeframe?: Timeframe;
   top?: number;
@@ -125,5 +148,16 @@ export async function fetchSmartMoney(params?: {
   const qs = sp.toString();
   const res = await fetch(`${BASE}/smart-money${qs ? `?${qs}` : ""}`);
   if (!res.ok) throw new Error(`Smart money fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchCopyPortfolio(params?: {
+  top?: number;
+}): Promise<CopyPortfolioResponse> {
+  const sp = new URLSearchParams();
+  if (params?.top) sp.set("top", String(params.top));
+  const qs = sp.toString();
+  const res = await fetch(`${BASE}/lab/copy-portfolio${qs ? `?${qs}` : ""}`);
+  if (!res.ok) throw new Error(`Copy portfolio fetch failed: ${res.status}`);
   return res.json();
 }

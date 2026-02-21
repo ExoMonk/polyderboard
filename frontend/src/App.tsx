@@ -10,6 +10,7 @@ const TraderDetail = lazy(() => import("./pages/TraderDetail"));
 const Activity = lazy(() => import("./pages/Activity"));
 const MarketDetail = lazy(() => import("./pages/MarketDetail"));
 const Alerts = lazy(() => import("./pages/Alerts"));
+const Lab = lazy(() => import("./pages/Lab"));
 
 export default function App() {
   const location = useLocation();
@@ -32,6 +33,7 @@ export default function App() {
             <Route path="/activity" element={<Activity />} />
             <Route path="/market/:tokenId" element={<MarketDetail />} />
             <Route path="/alerts" element={<Alerts />} />
+            <Route path="/lab" element={<Lab />} />
           </Routes>
         </motion.div>
       </AnimatePresence>
