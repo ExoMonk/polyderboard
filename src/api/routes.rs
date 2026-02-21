@@ -1130,6 +1130,402 @@ pub async fn smart_money(
     Ok(Json(SmartMoneyResponse { markets, top }))
 }
 
+pub async fn trader_profile(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let address = address.to_lowercase();
+
+    // Query 1: aggregate stats
+    let agg = state
+        .db
+        .query(
+            "WITH resolved AS (
+                SELECT asset_id, resolved_price FROM poly_dearboard.resolved_prices FINAL
+            )
+            SELECT
+                toString(ROUND(avg(tp.total_volume), 6)) AS avg_position_size,
+                avg(if(tp.first_ts IS NOT NULL AND tp.last_ts IS NOT NULL,
+                    dateDiff('hour', tp.first_ts, tp.last_ts), 0)) AS avg_hold_time_hours,
+                count() AS total_positions,
+                countIf(rp.asset_id != '') AS resolved_positions
+            FROM poly_dearboard.trader_positions tp FINAL
+            LEFT JOIN resolved rp ON tp.asset_id = rp.asset_id
+            WHERE lower(tp.trader) = ?",
+        )
+        .bind(&address)
+        .fetch_optional::<ProfileAggRow>()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let agg = match agg {
+        Some(a) => a,
+        None => return Err((StatusCode::NOT_FOUND, "Trader not found".into())),
+    };
+
+    // Query 2: all positions with PnL (for biggest win/loss, categories, labels)
+    let positions = state
+        .db
+        .query(
+            "WITH resolved AS (
+                SELECT asset_id, toNullable(toFloat64(resolved_price)) AS resolved_price
+                FROM poly_dearboard.resolved_prices FINAL
+            )
+            SELECT
+                tp.asset_id,
+                toString(ROUND((tp.sell_usdc - tp.buy_usdc)
+                    + (tp.buy_amount - tp.sell_amount)
+                    * coalesce(rp.resolved_price, toFloat64(lp.latest_price)), 6)) AS pnl,
+                toString(tp.total_volume) AS total_volume,
+                tp.trade_count,
+                toString(tp.buy_amount - tp.sell_amount) AS net_tokens,
+                ifNull(toString(tp.first_ts), '') AS first_ts,
+                ifNull(toString(tp.last_ts), '') AS last_ts,
+                ifNull(toString(rp.resolved_price), '') AS resolved_price,
+                if(rp.resolved_price IS NOT NULL, 1, 0) AS on_chain_resolved,
+                toString(coalesce(toFloat64(lp.latest_price), 0)) AS latest_price,
+                toString(tp.buy_usdc) AS buy_usdc,
+                toString(tp.sell_usdc) AS sell_usdc
+            FROM poly_dearboard.trader_positions tp FINAL
+            LEFT JOIN (SELECT asset_id, latest_price FROM poly_dearboard.asset_latest_price FINAL) lp
+                ON tp.asset_id = lp.asset_id
+            LEFT JOIN resolved rp ON tp.asset_id = rp.asset_id
+            WHERE lower(tp.trader) = ?",
+        )
+        .bind(&address)
+        .fetch_all::<ProfilePositionRow>()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Resolve market metadata for all positions
+    let token_ids: Vec<String> = positions.iter().map(|p| p.asset_id.clone()).collect();
+    let market_info =
+        markets::resolve_markets(&state.http, &state.market_cache, &token_ids).await;
+
+    // Biggest win / biggest loss
+    let mut best_win: Option<(f64, &ProfilePositionRow)> = None;
+    let mut best_loss: Option<(f64, &ProfilePositionRow)> = None;
+
+    for p in &positions {
+        let pnl: f64 = p.pnl.parse().unwrap_or(0.0);
+        if pnl > 0.0 && best_win.map(|(v, _)| pnl > v).unwrap_or(true) {
+            best_win = Some((pnl, p));
+        }
+        if pnl < 0.0 && best_loss.map(|(v, _)| pnl < v).unwrap_or(true) {
+            best_loss = Some((pnl, p));
+        }
+    }
+
+    let to_highlight = |row: &ProfilePositionRow| -> PositionHighlight {
+        let info = market_info.get(&row.asset_id);
+        PositionHighlight {
+            asset_id: info
+                .map(|i| i.gamma_token_id.clone())
+                .unwrap_or_else(|| markets::to_integer_id(&row.asset_id)),
+            question: info
+                .map(|i| i.question.clone())
+                .unwrap_or_else(|| shorten_id(&row.asset_id)),
+            outcome: info.map(|i| i.outcome.clone()).unwrap_or_default(),
+            pnl: row.pnl.clone(),
+        }
+    };
+
+    let biggest_win = best_win.map(|(_, r)| to_highlight(r));
+    let biggest_loss = best_loss.map(|(_, r)| to_highlight(r));
+
+    // Category breakdown (hybrid SQL + Rust via MarketCache)
+    let mut cat_map: std::collections::HashMap<String, (f64, u64, f64)> =
+        std::collections::HashMap::new();
+    let mut total_volume: f64 = 0.0;
+    let mut total_trade_count: u64 = 0;
+    let mut earliest_ts: Option<&str> = None;
+    let mut latest_ts: Option<&str> = None;
+
+    for p in &positions {
+        let category = market_info
+            .get(&p.asset_id)
+            .map(|i| i.category.clone())
+            .unwrap_or_else(|| "Unknown".to_string());
+        let vol: f64 = p.total_volume.parse().unwrap_or(0.0);
+        let pnl: f64 = p.pnl.parse().unwrap_or(0.0);
+        let entry = cat_map.entry(category).or_insert((0.0, 0, 0.0));
+        entry.0 += vol;
+        entry.1 += p.trade_count;
+        entry.2 += pnl;
+        total_volume += vol;
+        total_trade_count += p.trade_count;
+
+        if !p.first_ts.is_empty() {
+            if earliest_ts.map(|e| p.first_ts.as_str() < e).unwrap_or(true) {
+                earliest_ts = Some(&p.first_ts);
+            }
+        }
+        if !p.last_ts.is_empty() {
+            if latest_ts.map(|l| p.last_ts.as_str() > l).unwrap_or(true) {
+                latest_ts = Some(&p.last_ts);
+            }
+        }
+    }
+
+    let mut category_breakdown: Vec<CategoryStats> = cat_map
+        .into_iter()
+        .map(|(cat, (vol, tc, pnl))| CategoryStats {
+            category: cat,
+            volume: format!("{:.6}", vol),
+            trade_count: tc,
+            pnl: format!("{:.6}", pnl),
+        })
+        .collect();
+    category_breakdown.sort_by(|a, b| {
+        let va: f64 = a.volume.parse().unwrap_or(0.0);
+        let vb: f64 = b.volume.parse().unwrap_or(0.0);
+        vb.partial_cmp(&va).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Compute active span
+    let active_span_days = match (earliest_ts, latest_ts) {
+        (Some(e), Some(l)) => {
+            let early = chrono::NaiveDateTime::parse_from_str(e, "%Y-%m-%d %H:%M:%S")
+                .or_else(|_| chrono::NaiveDateTime::parse_from_str(e, "%Y-%m-%dT%H:%M:%S"));
+            let late = chrono::NaiveDateTime::parse_from_str(l, "%Y-%m-%d %H:%M:%S")
+                .or_else(|_| chrono::NaiveDateTime::parse_from_str(l, "%Y-%m-%dT%H:%M:%S"));
+            match (early, late) {
+                (Ok(e), Ok(l)) => (l - e).num_hours() as f64 / 24.0,
+                _ => 0.0,
+            }
+        }
+        _ => 0.0,
+    };
+
+    let (labels, label_details) = compute_labels(
+        &positions,
+        &market_info,
+        &category_breakdown,
+        total_volume,
+        total_trade_count,
+        positions.len() as u64,
+        active_span_days,
+    );
+
+    Ok(Json(TraderProfile {
+        avg_position_size: agg.avg_position_size,
+        avg_hold_time_hours: agg.avg_hold_time_hours,
+        biggest_win,
+        biggest_loss,
+        category_breakdown,
+        total_positions: agg.total_positions,
+        resolved_positions: agg.resolved_positions,
+        labels,
+        label_details,
+    }))
+}
+
+fn compute_labels(
+    positions: &[ProfilePositionRow],
+    market_info: &std::collections::HashMap<String, markets::MarketInfo>,
+    category_breakdown: &[CategoryStats],
+    total_volume: f64,
+    total_trade_count: u64,
+    unique_markets: u64,
+    active_span_days: f64,
+) -> (Vec<BehavioralLabel>, LabelDetails) {
+    let mut labels = Vec::new();
+
+    // Win rate + z-score from settled positions
+    // "Settled" = on-chain resolved OR price near 0/1 (de facto decided)
+    let mut settled_count: u64 = 0;
+    let mut correct_count: u64 = 0;
+
+    for p in positions {
+        let lp: f64 = p.latest_price.parse().unwrap_or(0.5);
+        let is_settled = p.on_chain_resolved == 1 || lp >= 0.95 || lp <= 0.05;
+        if !is_settled {
+            continue;
+        }
+
+        let effective_price: f64 = if p.on_chain_resolved == 1 {
+            p.resolved_price.parse().unwrap_or(0.5)
+        } else if lp >= 0.95 {
+            1.0
+        } else {
+            0.0
+        };
+
+        let net: f64 = p.net_tokens.parse().unwrap_or(0.0);
+        if net.abs() < 1e-9 {
+            continue; // fully closed before settlement, skip
+        }
+        settled_count += 1;
+        let is_correct =
+            (net > 0.0 && effective_price > 0.5) || (net < 0.0 && effective_price < 0.5);
+        if is_correct {
+            correct_count += 1;
+        }
+    }
+
+    let win_rate = if settled_count > 0 {
+        (correct_count as f64 / settled_count as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    let z_score = if settled_count >= 2 {
+        let n = settled_count as f64;
+        (correct_count as f64 - n * 0.5) / (n * 0.25_f64).sqrt()
+    } else {
+        0.0
+    };
+
+    // Category dominance
+    let (dominant_category, dominant_pct, cat_win_rate) = if !category_breakdown.is_empty()
+        && total_volume > 0.0
+    {
+        let top = &category_breakdown[0]; // already sorted by volume desc
+        let top_vol: f64 = top.volume.parse().unwrap_or(0.0);
+        let pct = (top_vol / total_volume) * 100.0;
+
+        // Category win rate from settled positions in this category
+        let mut cat_settled = 0u64;
+        let mut cat_correct = 0u64;
+        for p in positions {
+            let lp: f64 = p.latest_price.parse().unwrap_or(0.5);
+            let is_settled = p.on_chain_resolved == 1 || lp >= 0.95 || lp <= 0.05;
+            if !is_settled {
+                continue;
+            }
+            let cat = market_info
+                .get(&p.asset_id)
+                .map(|i| i.category.as_str())
+                .unwrap_or("Unknown");
+            if cat != top.category {
+                continue;
+            }
+            let effective_price: f64 = if p.on_chain_resolved == 1 {
+                p.resolved_price.parse().unwrap_or(0.5)
+            } else if lp >= 0.95 {
+                1.0
+            } else {
+                0.0
+            };
+            let net: f64 = p.net_tokens.parse().unwrap_or(0.0);
+            if net.abs() < 1e-9 {
+                continue;
+            }
+            cat_settled += 1;
+            if (net > 0.0 && effective_price > 0.5) || (net < 0.0 && effective_price < 0.5) {
+                cat_correct += 1;
+            }
+        }
+        let cwr = if cat_settled > 0 {
+            (cat_correct as f64 / cat_settled as f64) * 100.0
+        } else {
+            0.0
+        };
+        (top.category.clone(), pct, cwr)
+    } else {
+        (String::new(), 0.0, 0.0)
+    };
+
+    let avg_position = if unique_markets > 0 {
+        total_volume / unique_markets as f64
+    } else {
+        0.0
+    };
+
+    // Buy/sell balance for Market Maker detection
+    let total_buy: f64 = positions
+        .iter()
+        .map(|p| p.buy_usdc.parse::<f64>().unwrap_or(0.0))
+        .sum();
+    let total_sell: f64 = positions
+        .iter()
+        .map(|p| p.sell_usdc.parse::<f64>().unwrap_or(0.0))
+        .sum();
+    let buy_sell_ratio = if total_buy.max(total_sell) > 0.0 {
+        total_buy.min(total_sell) / total_buy.max(total_sell)
+    } else {
+        0.0
+    };
+
+    let trades_per_market = if unique_markets > 0 {
+        total_trade_count as f64 / unique_markets as f64
+    } else {
+        0.0
+    };
+
+    // --- Labels (not mutually exclusive) ---
+
+    // Sharp: skilled trader, statistically significant edge
+    if win_rate >= 60.0 && settled_count >= 10 && z_score > 1.5 {
+        labels.push(BehavioralLabel::Sharp);
+    }
+
+    // Specialist: concentrated in one category
+    let cat_settled_count: u64 = positions
+        .iter()
+        .filter(|p| {
+            let lp: f64 = p.latest_price.parse().unwrap_or(0.5);
+            let is_settled = p.on_chain_resolved == 1 || lp >= 0.95 || lp <= 0.05;
+            is_settled
+                && market_info
+                    .get(&p.asset_id)
+                    .map(|i| i.category == dominant_category)
+                    .unwrap_or(false)
+        })
+        .count() as u64;
+    let is_specialist = if cat_settled_count >= 5 {
+        dominant_pct > 70.0 && cat_win_rate > 55.0
+    } else {
+        dominant_pct >= 80.0 && total_volume > 10_000.0 && total_trade_count >= 10
+    };
+    if is_specialist && !dominant_category.is_empty() && dominant_category != "Unknown" {
+        labels.push(BehavioralLabel::Specialist);
+    }
+
+    // Whale: large concentrated bets
+    if total_volume > 100_000.0 && avg_position > 5_000.0 && unique_markets < 30 {
+        labels.push(BehavioralLabel::Whale);
+    }
+
+    // Degen: high volume, poor win rate — no edge
+    if win_rate < 40.0 && settled_count >= 10 && total_volume > 5_000.0 {
+        labels.push(BehavioralLabel::Degen);
+    }
+
+    // Market Maker: balanced buy/sell, high activity across many markets
+    if buy_sell_ratio > 0.6 && total_trade_count >= 50 && unique_markets >= 10 {
+        labels.push(BehavioralLabel::MarketMaker);
+    }
+
+    // Bot: high trade frequency per market (constant rebalancing)
+    if total_trade_count >= 200 && trades_per_market >= 15.0 {
+        labels.push(BehavioralLabel::Bot);
+    }
+
+    // Casual: small/infrequent
+    if total_trade_count < 10 || total_volume < 500.0 {
+        labels.push(BehavioralLabel::Casual);
+    }
+
+    let details = LabelDetails {
+        win_rate,
+        z_score,
+        settled_count,
+        dominant_category,
+        dominant_category_pct: dominant_pct,
+        category_win_rate: cat_win_rate,
+        total_volume: format!("{:.6}", total_volume),
+        avg_position_size_usd: format!("{:.6}", avg_position),
+        unique_markets,
+        total_trade_count,
+        active_span_days,
+        buy_sell_ratio,
+        trades_per_market,
+    };
+
+    (labels, details)
+}
+
 fn shorten_id(id: &str) -> String {
     if id.len() <= 12 {
         id.to_string()

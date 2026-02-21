@@ -219,9 +219,14 @@ pub async fn populate_resolved_prices(db: &clickhouse::Client, cache: &MarketCac
     }
 
     // 2. Build condition_id → (payout_numerators, block_number) map
+    //    Normalize keys by stripping 0x prefix — rindexer stores WITH 0x,
+    //    Gamma API also stores WITH 0x, but we strip both sides for consistent matching.
     let resolution_map: HashMap<String, (&Vec<String>, u64)> = resolutions
         .iter()
-        .map(|r| (r.condition_id.clone(), (&r.payout_numerators, r.block_number)))
+        .map(|r| {
+            let bare = r.condition_id.strip_prefix("0x").unwrap_or(&r.condition_id).to_string();
+            (bare, (&r.payout_numerators, r.block_number))
+        })
         .collect();
 
     tracing::info!(

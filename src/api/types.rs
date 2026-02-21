@@ -268,6 +268,90 @@ pub struct ResolvedMarket {
     pub outcomes: Vec<String>,
 }
 
+// -- Trader Profile --
+
+#[derive(Row, Deserialize)]
+pub struct ProfileAggRow {
+    pub avg_position_size: String,
+    pub avg_hold_time_hours: f64,
+    pub total_positions: u64,
+    pub resolved_positions: u64,
+}
+
+#[derive(Row, Deserialize)]
+pub struct ProfilePositionRow {
+    pub asset_id: String,
+    pub pnl: String,
+    pub total_volume: String,
+    pub trade_count: u64,
+    pub net_tokens: String,
+    pub first_ts: String,
+    pub last_ts: String,
+    pub resolved_price: String,
+    pub on_chain_resolved: u8,
+    pub latest_price: String,
+    pub buy_usdc: String,
+    pub sell_usdc: String,
+}
+
+#[derive(Serialize)]
+pub struct PositionHighlight {
+    pub asset_id: String,
+    pub question: String,
+    pub outcome: String,
+    pub pnl: String,
+}
+
+#[derive(Serialize)]
+pub struct CategoryStats {
+    pub category: String,
+    pub volume: String,
+    pub trade_count: u64,
+    pub pnl: String,
+}
+
+#[derive(Serialize)]
+pub struct TraderProfile {
+    pub avg_position_size: String,
+    pub avg_hold_time_hours: f64,
+    pub biggest_win: Option<PositionHighlight>,
+    pub biggest_loss: Option<PositionHighlight>,
+    pub category_breakdown: Vec<CategoryStats>,
+    pub total_positions: u64,
+    pub resolved_positions: u64,
+    pub labels: Vec<BehavioralLabel>,
+    pub label_details: LabelDetails,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BehavioralLabel {
+    Sharp,
+    Specialist,
+    Whale,
+    Degen,
+    MarketMaker,
+    Bot,
+    Casual,
+}
+
+#[derive(Serialize)]
+pub struct LabelDetails {
+    pub win_rate: f64,
+    pub z_score: f64,
+    pub settled_count: u64,
+    pub dominant_category: String,
+    pub dominant_category_pct: f64,
+    pub category_win_rate: f64,
+    pub total_volume: String,
+    pub avg_position_size_usd: String,
+    pub unique_markets: u64,
+    pub total_trade_count: u64,
+    pub active_span_days: f64,
+    pub buy_sell_ratio: f64,
+    pub trades_per_market: f64,
+}
+
 // -- Smart Money Signal --
 
 #[derive(Deserialize)]
