@@ -4,6 +4,10 @@ mod api;
 
 #[tokio::main]
 async fn main() {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls CryptoProvider");
+
     dotenv::dotenv().ok();
     tracing_subscriber::fmt::init();
 
