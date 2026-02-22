@@ -10,9 +10,31 @@ import {
   useAddMembers,
   useRemoveMembers,
 } from "../../hooks/useTraderLists";
-import { shortenAddress } from "../../lib/format";
+import {
+  shortenAddress,
+  timeAgo,
+  polymarketAddress,
+  polygonscanAddress,
+} from "../../lib/format";
 import { panelVariants, tapScale } from "../../lib/motion";
 import { SectionHeader } from "./shared";
+
+/* ── tiny inline SVGs ── */
+const IconPencil = () => (
+  <svg viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3">
+    <path d="M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 0 1-.927-.928l.929-3.25a1.75 1.75 0 0 1 .445-.758l8.61-8.61Zm1.414 1.06a.25.25 0 0 0-.354 0L3.463 11.1a.25.25 0 0 0-.064.108l-.558 1.953 1.953-.558a.25.25 0 0 0 .108-.064l8.61-8.61a.25.25 0 0 0 0-.354L12.427 2.487Z" />
+  </svg>
+);
+const IconTrash = () => (
+  <svg viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3">
+    <path d="M11 1.75V3h2.25a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1 0-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75ZM6.5 1.75V3h3V1.75a.25.25 0 0 0-.25-.25h-2.5a.25.25 0 0 0-.25.25ZM3.613 5.5l.7 8.398A1.75 1.75 0 0 0 6.06 15.5h3.88a1.75 1.75 0 0 0 1.747-1.602l.7-8.398H3.613Z" />
+  </svg>
+);
+const IconExternal = () => (
+  <svg viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3">
+    <path d="M3.75 2h3.5a.75.75 0 0 1 0 1.5h-3.5a.25.25 0 0 0-.25.25v8.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25v-3.5a.75.75 0 0 1 1.5 0v3.5A1.75 1.75 0 0 1 12.25 14h-8.5A1.75 1.75 0 0 1 2 12.25v-8.5C2 2.784 2.784 2 3.75 2Zm6.854-1h4.146a.25.25 0 0 1 .25.25v4.146a.25.25 0 0 1-.427.177L13.03 4.03 9.28 7.78a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042l3.75-3.75-1.543-1.543A.25.25 0 0 1 10.604 1Z" />
+  </svg>
+);
 
 export default function TraderListManager({ onClose }: { onClose: () => void }) {
   const { data: lists, isLoading } = useTraderLists();
@@ -118,78 +140,111 @@ export default function TraderListManager({ onClose }: { onClose: () => void }) 
         <p className="text-sm text-[var(--text-secondary)]">No lists yet. Create one above.</p>
       ) : (
         <div className="space-y-2 mb-5">
-          {lists.map((list) => (
-            <div
-              key={list.id}
-              className={`flex items-center gap-3 px-4 py-3 rounded-lg border cursor-pointer transition-all ${
-                selectedListId === list.id
-                  ? "bg-[var(--accent-blue)]/10 border-[var(--accent-blue)]/30"
-                  : "border-[var(--border-glow)] hover:border-[var(--accent-blue)]/20 hover:bg-[var(--accent-blue)]/5"
-              }`}
-              onClick={() => setSelectedListId(selectedListId === list.id ? null : list.id)}
-            >
-              <div className="flex-1 min-w-0">
-                {renamingId === list.id ? (
-                  <input
-                    type="text"
-                    value={renameValue}
-                    onChange={(e) => setRenameValue(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") handleRename(list.id);
-                      if (e.key === "Escape") setRenamingId(null);
-                    }}
-                    onBlur={() => setRenamingId(null)}
-                    autoFocus
-                    onClick={(e) => e.stopPropagation()}
-                    className="w-full px-2 py-0.5 text-sm bg-[var(--bg-deep)] border border-[var(--accent-blue)]/40 rounded text-[var(--text-primary)] focus:outline-none"
-                  />
-                ) : (
-                  <span className="text-sm font-medium text-[var(--text-primary)] truncate block">
-                    {list.name}
-                  </span>
-                )}
-              </div>
-              <span className="text-xs text-[var(--text-secondary)] font-mono">
-                {list.member_count} traders
-              </span>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setRenamingId(list.id);
-                  setRenameValue(list.name);
-                }}
-                className="text-xs text-[var(--text-secondary)] hover:text-[var(--accent-blue)] transition-colors cursor-pointer"
+          {lists.map((list) => {
+            const isSelected = selectedListId === list.id;
+            const isDeleting = confirmDeleteId === list.id;
+
+            return (
+              <motion.div
+                key={list.id}
+                layout
+                className={`group glass rounded-lg cursor-pointer transition-all ${
+                  isSelected
+                    ? "border-[var(--accent-blue)]/30 shadow-[0_0_12px_rgba(59,130,246,0.1)]"
+                    : "hover:border-[var(--accent-blue)]/20"
+                }`}
+                onClick={() => setSelectedListId(isSelected ? null : list.id)}
               >
-                Rename
-              </button>
-              {confirmDeleteId === list.id ? (
-                <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    onClick={() => handleDelete(list.id)}
-                    className="text-xs text-[var(--neon-red)] font-semibold cursor-pointer"
+                <div className="flex items-center gap-3 px-4 py-3">
+                  {/* Color bar */}
+                  <div
+                    className={`w-1 self-stretch rounded-full transition-colors ${
+                      isSelected ? "bg-[var(--accent-blue)]" : "bg-[var(--border-glow)]"
+                    }`}
+                  />
+
+                  {/* Name */}
+                  <div className="flex-1 min-w-0">
+                    {renamingId === list.id ? (
+                      <input
+                        type="text"
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleRename(list.id);
+                          if (e.key === "Escape") setRenamingId(null);
+                        }}
+                        onBlur={() => setRenamingId(null)}
+                        autoFocus
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-full px-2 py-0.5 text-sm bg-[var(--bg-deep)] border border-[var(--accent-blue)]/40 rounded text-[var(--text-primary)] focus:outline-none"
+                      />
+                    ) : (
+                      <span className="text-sm font-medium text-[var(--text-primary)] truncate block">
+                        {list.name}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Member count pill */}
+                  <span
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider transition-colors ${
+                      isSelected
+                        ? "bg-[var(--accent-blue)]/15 text-[var(--accent-blue)]"
+                        : "bg-[var(--text-secondary)]/10 text-[var(--text-secondary)]"
+                    }`}
                   >
-                    Confirm
-                  </button>
-                  <button
-                    onClick={() => setConfirmDeleteId(null)}
-                    className="text-xs text-[var(--text-secondary)] cursor-pointer"
-                  >
-                    Cancel
-                  </button>
+                    {list.member_count}
+                    <span className="hidden sm:inline">
+                      {list.member_count === 1 ? "trader" : "traders"}
+                    </span>
+                  </span>
+
+                  {/* Action buttons */}
+                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setRenamingId(list.id);
+                        setRenameValue(list.name);
+                      }}
+                      title="Rename"
+                      className="p-1.5 rounded-md text-[var(--text-secondary)] hover:text-[var(--accent-blue)] hover:bg-[var(--accent-blue)]/10 transition-colors cursor-pointer"
+                    >
+                      <IconPencil />
+                    </button>
+                    {isDeleting ? (
+                      <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          onClick={() => handleDelete(list.id)}
+                          className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider text-[var(--neon-red)] bg-[var(--neon-red)]/10 cursor-pointer"
+                        >
+                          Confirm
+                        </button>
+                        <button
+                          onClick={() => setConfirmDeleteId(null)}
+                          className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider text-[var(--text-secondary)] cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmDeleteId(list.id);
+                        }}
+                        title="Delete"
+                        className="p-1.5 rounded-md text-[var(--text-secondary)] hover:text-[var(--neon-red)] hover:bg-[var(--neon-red)]/10 transition-colors cursor-pointer"
+                      >
+                        <IconTrash />
+                      </button>
+                    )}
+                  </div>
                 </div>
-              ) : (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setConfirmDeleteId(list.id);
-                  }}
-                  className="text-xs text-[var(--text-secondary)] hover:text-[var(--neon-red)] transition-colors cursor-pointer"
-                >
-                  Delete
-                </button>
-              )}
-            </div>
-          ))}
+              </motion.div>
+            );
+          })}
         </div>
       )}
 
@@ -231,23 +286,65 @@ export default function TraderListManager({ onClose }: { onClose: () => void }) 
               {detail.members.length === 0 ? (
                 <p className="text-sm text-[var(--text-secondary)]">No members yet.</p>
               ) : (
-                <div className="space-y-1 max-h-60 overflow-y-auto">
-                  {detail.members.map((m) => (
+                <div className="space-y-1.5 max-h-80 overflow-y-auto pr-1">
+                  {detail.members.map((m, i) => (
                     <div
                       key={m.address}
-                      className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-[var(--accent-blue)]/5 transition-colors"
+                      className="group/row flex items-center gap-3 px-3 py-2.5 rounded-lg border border-transparent hover:border-[var(--border-glow)] hover:bg-[var(--accent-blue)]/5 transition-all"
                     >
-                      <Link
-                        to={`/trader/${m.address}`}
-                        className="font-mono text-sm text-[var(--text-primary)] hover:text-[var(--accent-blue)] transition-colors"
-                      >
-                        {shortenAddress(m.address)}
-                      </Link>
+                      {/* Row number */}
+                      <span className="text-[11px] font-mono text-[var(--text-secondary)] w-5 text-right shrink-0">
+                        {i + 1}
+                      </span>
+
+                      {/* Address + label + links — all together on the left */}
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <Link
+                          to={`/trader/${m.address}`}
+                          className="font-mono text-sm font-medium text-[var(--text-primary)] hover:text-[var(--accent-blue)] transition-colors"
+                        >
+                          {shortenAddress(m.address)}
+                        </Link>
+
+                        {m.label && (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-[var(--accent-orange)]/10 text-[var(--accent-orange)] truncate max-w-[120px]">
+                            {m.label}
+                          </span>
+                        )}
+
+                        {/* Inline links — always visible */}
+                        <a
+                          href={polymarketAddress(m.address)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title="Polymarket profile"
+                          className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold text-[var(--accent-blue)]/60 hover:text-[var(--accent-blue)] hover:bg-[var(--accent-blue)]/10 transition-colors"
+                        >
+                          PM <IconExternal />
+                        </a>
+                        <a
+                          href={polygonscanAddress(m.address)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title="Polygonscan"
+                          className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold text-[var(--neon-green)]/50 hover:text-[var(--neon-green)] hover:bg-[var(--neon-green)]/10 transition-colors"
+                        >
+                          Scan <IconExternal />
+                        </a>
+                      </div>
+
+                      {/* Added time */}
+                      <span className="text-[11px] text-[var(--text-secondary)] whitespace-nowrap shrink-0">
+                        {timeAgo(m.added_at)}
+                      </span>
+
+                      {/* Remove — appears on hover */}
                       <button
                         onClick={() => handleRemoveMember(m.address)}
-                        className="text-xs text-[var(--text-secondary)] hover:text-[var(--neon-red)] transition-colors cursor-pointer"
+                        title="Remove from list"
+                        className="p-1.5 rounded-md text-[var(--text-secondary)] opacity-0 group-hover/row:opacity-100 hover:text-[var(--neon-red)] hover:bg-[var(--neon-red)]/10 transition-all cursor-pointer shrink-0"
                       >
-                        Remove
+                        <IconTrash />
                       </button>
                     </div>
                   ))}

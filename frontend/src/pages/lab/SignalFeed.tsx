@@ -3,7 +3,7 @@ import useSignalFeed from "../../hooks/useSignalFeed";
 import ListSelector from "./ListSelector";
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { shortenAddress, formatUsd, timeAgo } from "../../lib/format";
+import { shortenAddress, formatUsd, polygonscanTx } from "../../lib/format";
 import { panelVariants, alertCardVariants } from "../../lib/motion";
 import { SectionHeader } from "./shared";
 
@@ -66,32 +66,44 @@ export default function SignalFeed() {
                       className="glass px-4 py-3 flex items-center gap-3 text-sm"
                     >
                       <span
-                        className={`text-xs font-bold uppercase px-2 py-0.5 rounded ${
-                          t.side === "Buy"
-                            ? "text-[var(--neon-green)] bg-[var(--neon-green)]/10"
-                            : "text-[var(--neon-red)] bg-[var(--neon-red)]/10"
+                        className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full tracking-wide ${
+                          t.side.toLowerCase() === "buy"
+                            ? "text-[var(--neon-green)] bg-[var(--neon-green)]/10 shadow-[0_0_6px_rgba(0,255,136,0.15)]"
+                            : "text-[var(--neon-red)] bg-[var(--neon-red)]/10 shadow-[0_0_6px_rgba(255,51,102,0.15)]"
                         }`}
                       >
                         {t.side}
                       </span>
                       <Link
                         to={`/trader/${t.trader}`}
-                        className="font-mono text-[var(--accent-blue)] hover:text-white transition-colors"
+                        className="font-mono text-[var(--accent-blue)] hover:text-white transition-colors shrink-0"
                       >
                         {shortenAddress(t.trader)}
                       </Link>
-                      <span className="text-[var(--text-secondary)] truncate flex-1 min-w-0">
+                      <Link
+                        to={`/market/${t.asset_id}`}
+                        className="text-[var(--text-secondary)] hover:text-[var(--text-primary)] truncate flex-1 min-w-0 transition-colors"
+                      >
                         {t.question ?? t.asset_id.slice(0, 12)}
                         {t.outcome && (
-                          <span className="text-[var(--text-secondary)]/60 ml-1">· {t.outcome}</span>
+                          <span className="opacity-50 ml-1">· {t.outcome}</span>
                         )}
-                      </span>
-                      <span className="font-mono font-bold text-[var(--text-primary)]">
+                      </Link>
+                      <span className="font-mono font-bold text-[var(--text-primary)] shrink-0">
                         {formatUsd(t.usdc_amount)}
                       </span>
-                      <span className="text-xs text-[var(--text-secondary)]">
-                        {timeAgo(t.block_timestamp)}
-                      </span>
+                      <a
+                        href={polygonscanTx(t.tx_hash)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title="View on Polygonscan"
+                        className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold text-[var(--neon-green)]/50 hover:text-[var(--neon-green)] hover:bg-[var(--neon-green)]/10 transition-colors shrink-0"
+                      >
+                        Scan
+                        <svg viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3">
+                          <path d="M3.75 2h3.5a.75.75 0 0 1 0 1.5h-3.5a.25.25 0 0 0-.25.25v8.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25v-3.5a.75.75 0 0 1 1.5 0v3.5A1.75 1.75 0 0 1 12.25 14h-8.5A1.75 1.75 0 0 1 2 12.25v-8.5C2 2.784 2.784 2 3.75 2Zm6.854-1h4.146a.25.25 0 0 1 .25.25v4.146a.25.25 0 0 1-.427.177L13.03 4.03 9.28 7.78a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042l3.75-3.75-1.543-1.543A.25.25 0 0 1 10.604 1Z" />
+                        </svg>
+                      </a>
                     </motion.div>
                   ))}
                 </AnimatePresence>
@@ -128,7 +140,7 @@ export default function SignalFeed() {
                         </span>
                         <span
                           className={`text-xs font-bold px-1.5 py-0.5 rounded ${
-                            a.side === "Buy"
+                            a.side.toLowerCase() === "buy"
                               ? "text-[var(--neon-green)] bg-[var(--neon-green)]/10"
                               : "text-[var(--neon-red)] bg-[var(--neon-red)]/10"
                           }`}
