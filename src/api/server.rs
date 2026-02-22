@@ -1,10 +1,10 @@
 use axum::{routing::{get, post}, Router};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, RwLock};
 use tower_http::cors::{Any, CorsLayer};
 
-use super::{alerts, markets, routes, scanner, types::LeaderboardResponse};
+use super::{alerts, db, markets, routes, scanner, types::LeaderboardResponse};
 
 /// Cached leaderboard response with expiry.
 pub struct CachedResponse {
@@ -22,6 +22,8 @@ pub struct AppState {
     pub alert_tx: broadcast::Sender<alerts::Alert>,
     pub trade_tx: broadcast::Sender<alerts::LiveTrade>,
     pub leaderboard_cache: LeaderboardCache,
+    pub user_db: Arc<Mutex<rusqlite::Connection>>,
+    pub jwt_secret: Arc<Vec<u8>>,
 }
 
 pub async fn run(client: clickhouse::Client, port: u16) {
@@ -29,6 +31,11 @@ pub async fn run(client: clickhouse::Client, port: u16) {
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
+
+    let jwt_secret = std::env::var("JWT_SECRET")
+        .expect("JWT_SECRET env var is required for wallet authentication");
+
+    let user_conn = db::init_user_db("data/users.db");
 
     let (alert_tx, _) = broadcast::channel::<alerts::Alert>(256);
     let (trade_tx, _) = broadcast::channel::<alerts::LiveTrade>(512);
@@ -40,6 +47,8 @@ pub async fn run(client: clickhouse::Client, port: u16) {
         alert_tx,
         trade_tx,
         leaderboard_cache: Arc::new(RwLock::new(HashMap::new())),
+        user_db: Arc::new(Mutex::new(user_conn)),
+        jwt_secret: Arc::new(jwt_secret.into_bytes()),
     };
 
     // Pre-warm the market name cache in the background, then refresh periodically
@@ -84,7 +93,14 @@ pub async fn run(client: clickhouse::Client, port: u16) {
         tokio::spawn(scanner::run(http, rpc_url, alert_tx));
     }
 
-    let api = Router::new()
+    // Public API routes (no auth required)
+    let public_api = Router::new()
+        .route("/auth/nonce", get(routes::auth_nonce))
+        .route("/auth/verify", post(routes::auth_verify))
+        .route("/health", get(routes::health));
+
+    // Protected API routes (JWT required — AuthUser extractor on each handler)
+    let protected_api = Router::new()
         .route("/leaderboard", get(routes::leaderboard))
         .route("/trader/{address}", get(routes::trader_stats))
         .route("/trader/{address}/trades", get(routes::trader_trades))
@@ -92,16 +108,14 @@ pub async fn run(client: clickhouse::Client, port: u16) {
         .route("/trader/{address}/pnl-chart", get(routes::pnl_chart))
         .route("/markets/hot", get(routes::hot_markets))
         .route("/trades/recent", get(routes::recent_trades))
-        .route("/health", get(routes::health))
         .route("/market/resolve", get(routes::resolve_market))
-        .route("/auth/verify", post(routes::verify_access_code))
         .route("/smart-money", get(routes::smart_money))
         .route("/trader/{address}/profile", get(routes::trader_profile))
         .route("/lab/backtest", post(routes::backtest))
         .route("/lab/copy-portfolio", get(routes::copy_portfolio));
 
     let app = Router::new()
-        .nest("/api", api)
+        .nest("/api", public_api.merge(protected_api))
         .route("/webhooks/rindexer", post(alerts::webhook_handler))
         .route("/ws/alerts", get(alerts::ws_handler))
         .route("/ws/trades", get(alerts::trades_ws_handler))

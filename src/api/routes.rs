@@ -5,6 +5,8 @@ use axum::{
     response::IntoResponse,
 };
 
+use serde::Deserialize;
+
 use super::markets;
 use super::server::AppState;
 use super::types::*;
@@ -1024,19 +1026,71 @@ pub async fn resolve_market(
     Ok(Json(resolved))
 }
 
-pub async fn verify_access_code(
-    Json(body): Json<serde_json::Value>,
-) -> impl IntoResponse {
-    let expected = std::env::var("ACCESS_CODE").unwrap_or_default();
-    if expected.is_empty() {
-        return StatusCode::OK;
-    }
-    let provided = body.get("code").and_then(|v| v.as_str()).unwrap_or("");
-    if provided == expected {
-        StatusCode::OK
-    } else {
-        StatusCode::UNAUTHORIZED
-    }
+// -- Wallet Auth (EIP-712 + JWT) --
+
+#[derive(Deserialize)]
+pub struct NonceParams {
+    pub address: String,
+}
+
+#[derive(Deserialize)]
+pub struct VerifyBody {
+    pub address: String,
+    pub signature: String,
+    pub nonce: String,
+    pub issued_at: String,
+}
+
+pub async fn auth_nonce(
+    State(state): State<AppState>,
+    Query(params): Query<NonceParams>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let user_db = state.user_db.clone();
+    let address = params.address.to_lowercase();
+
+    let (nonce, issued_at) = tokio::task::spawn_blocking(move || {
+        let conn = user_db.lock().expect("user_db lock poisoned");
+        super::db::get_or_create_user(&conn, &address)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(serde_json::json!({ "nonce": nonce, "issuedAt": issued_at })))
+}
+
+pub async fn auth_verify(
+    State(state): State<AppState>,
+    Json(body): Json<VerifyBody>,
+) -> Result<impl IntoResponse, super::auth::AuthError> {
+    let address = body.address.to_lowercase();
+    let signature = body.signature.clone();
+    let nonce = body.nonce.clone();
+    let issued_at = body.issued_at.clone();
+    let jwt_secret = state.jwt_secret.clone();
+
+    // Atomic: verify signature + check nonce + rotate — all under the lock
+    let user_db = state.user_db.clone();
+    let token = tokio::task::spawn_blocking(move || -> Result<String, super::auth::AuthError> {
+        // Verify EIP-712 signature
+        super::auth::recover_eip712_signer(&address, &nonce, &issued_at, &signature)?;
+
+        // Verify nonce + issued_at match DB, then rotate
+        let conn = user_db.lock().expect("user_db lock poisoned");
+        let valid = super::db::verify_and_rotate_nonce(&conn, &address, &nonce, &issued_at)
+            .map_err(|_| super::auth::AuthError::InvalidToken)?;
+
+        if !valid {
+            return Err(super::auth::AuthError::NonceMismatch);
+        }
+
+        Ok(super::auth::issue_jwt(&address, &jwt_secret))
+    })
+    .await
+    .map_err(|_| super::auth::AuthError::InvalidToken)??;
+
+    let address = body.address.to_lowercase();
+    Ok(Json(serde_json::json!({ "token": token, "address": address })))
 }
 
 pub async fn smart_money(

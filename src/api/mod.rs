@@ -1,5 +1,8 @@
 pub mod alerts;
+pub mod auth;
+pub mod db;
 pub mod markets;
+pub mod middleware;
 pub mod routes;
 pub mod scanner;
 pub mod server;
