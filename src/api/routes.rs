@@ -7,7 +7,8 @@ use axum::{
 
 use serde::Deserialize;
 
-use super::markets;
+use super::{db, markets, middleware};
+use super::middleware::AuthUser;
 use super::server::AppState;
 use super::types::*;
 
@@ -23,7 +24,7 @@ const EXCHANGE_CONTRACTS: &[&str] = &[
     "0x02A86f51aA7B8b1c17c30364748d5Ae4a0727E23", // Polymarket Relayer
 ];
 
-fn exclude_clause() -> String {
+pub(crate) fn exclude_clause() -> String {
     EXCHANGE_CONTRACTS
         .iter()
         .map(|a| format!("'{a}'"))
@@ -1940,39 +1941,67 @@ struct TopTraderRow {
 
 pub async fn backtest(
     State(state): State<AppState>,
+    user: AuthUser,
     Json(req): Json<BacktestRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let top_n = req.top_n.clamp(1, 50);
+    // Mutual-exclusion validation: exactly one of top_n or list_id
+    if req.top_n.is_some() && req.list_id.is_some() {
+        return Err((StatusCode::BAD_REQUEST, "Specify list_id or top_n, not both".into()));
+    }
+    if req.top_n.is_none() && req.list_id.is_none() {
+        return Err((StatusCode::BAD_REQUEST, "Specify either list_id or top_n".into()));
+    }
+
     let timeframe = match req.timeframe.as_str() {
         "7d" | "30d" | "all" => req.timeframe.as_str(),
         _ => return Err((StatusCode::BAD_REQUEST, "timeframe must be 7d, 30d, or all".into())),
     };
     let initial_capital = req.initial_capital.unwrap_or(10_000.0).clamp(100.0, 1_000_000.0);
     let copy_pct = req.copy_pct.unwrap_or(1.0).clamp(0.01, 1.0);
+
+    // 1) Resolve trader addresses — from list or top-N
+    let trader_rows: Vec<TopTraderRow>;
+
+    if let Some(ref list_id) = req.list_id {
+        let owner = user.0.clone();
+        let addresses = {
+            let conn = state.user_db.lock().unwrap_or_else(|p| p.into_inner());
+            db::get_list_member_addresses(&conn, list_id, &owner)
+                .map_err(|e| match e {
+                    db::ListError::NotFound => (StatusCode::NOT_FOUND, "List not found".into()),
+                    _ => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to load list".into()),
+                })?
+        };
+        if addresses.is_empty() {
+            return Err((StatusCode::BAD_REQUEST, "List has no members".into()));
+        }
+        trader_rows = addresses.into_iter().map(|a| TopTraderRow { address: a }).collect();
+    } else {
+        let top_n = req.top_n.unwrap().clamp(1, 50);
+        let exclude = exclude_clause();
+        let top_query = format!(
+            "WITH resolved AS (
+                SELECT asset_id, toNullable(toFloat64(resolved_price)) AS resolved_price
+                FROM poly_dearboard.resolved_prices FINAL
+            )
+            SELECT toString(p.trader) AS address
+            FROM poly_dearboard.trader_positions p
+            LEFT JOIN (SELECT asset_id, latest_price FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
+            LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
+            WHERE p.trader NOT IN ({exclude})
+            GROUP BY p.trader
+            ORDER BY sum((p.sell_usdc - p.buy_usdc) + (p.buy_amount - p.sell_amount) * coalesce(rp.resolved_price, toFloat64(lp.latest_price))) DESC
+            LIMIT {top_n}"
+        );
+        trader_rows = state.db.query(&top_query)
+            .fetch_all::<TopTraderRow>()
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+
+    let top_n = trader_rows.len() as u32;
     let user_allocation = initial_capital * copy_pct;
-    let per_trader_budget = user_allocation / top_n as f64;
-
-    // 1) Resolve top N traders by PnL
-    let exclude = exclude_clause();
-    let top_query = format!(
-        "WITH resolved AS (
-            SELECT asset_id, toNullable(toFloat64(resolved_price)) AS resolved_price
-            FROM poly_dearboard.resolved_prices FINAL
-        )
-        SELECT toString(p.trader) AS address
-        FROM poly_dearboard.trader_positions p
-        LEFT JOIN (SELECT asset_id, latest_price FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
-        LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
-        WHERE p.trader NOT IN ({exclude})
-        GROUP BY p.trader
-        ORDER BY sum((p.sell_usdc - p.buy_usdc) + (p.buy_amount - p.sell_amount) * coalesce(rp.resolved_price, toFloat64(lp.latest_price))) DESC
-        LIMIT {top_n}"
-    );
-
-    let trader_rows = state.db.query(&top_query)
-        .fetch_all::<TopTraderRow>()
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let per_trader_budget = if top_n > 0 { user_allocation / top_n as f64 } else { 0.0 };
 
     let config = BacktestConfig {
         initial_capital,
@@ -2299,48 +2328,107 @@ fn simulate_portfolio(
 
 pub async fn copy_portfolio(
     State(state): State<AppState>,
+    user: AuthUser,
     Query(params): Query<CopyPortfolioParams>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let top = params.top.unwrap_or(10).clamp(5, 50);
-    let exclude = exclude_clause();
+    // Mutual exclusion: list_id and top cannot both be present
+    if params.list_id.is_some() && params.top.is_some() {
+        return Err((StatusCode::BAD_REQUEST, "Specify list_id or top, not both".into()));
+    }
 
-    let query = format!(
-        "WITH
-            resolved AS (
-                SELECT asset_id, toNullable(toFloat64(resolved_price)) AS resolved_price
-                FROM poly_dearboard.resolved_prices FINAL
-            ),
-            trader_pnl AS (
-                SELECT p.trader,
-                       sum((p.sell_usdc - p.buy_usdc) + (p.buy_amount - p.sell_amount) * coalesce(rp.resolved_price, toFloat64(lp.latest_price))) AS total_pnl
-                FROM poly_dearboard.trader_positions p
-                LEFT JOIN (SELECT asset_id, latest_price FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
-                LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
-                WHERE p.trader NOT IN ({exclude})
-                GROUP BY p.trader
-                ORDER BY total_pnl DESC
-                LIMIT {top}
-            )
-        SELECT
-            toString(p.trader) AS trader,
-            p.asset_id AS asset_id,
-            toString(p.buy_amount - p.sell_amount) AS net_tokens,
-            toString(if(p.buy_amount > toDecimal128(0, 6),
-                ROUND(p.buy_usdc / p.buy_amount, 6),
-                toDecimal128(0, 6))) AS avg_entry,
-            toString(toFloat64(lp.latest_price)) AS latest_price,
-            toString(abs(toFloat64(p.buy_amount - p.sell_amount)) * toFloat64(lp.latest_price)) AS exposure,
-            toString(ROUND((p.sell_usdc - p.buy_usdc) + (p.buy_amount - p.sell_amount) * toFloat64(lp.latest_price), 6)) AS pnl
-        FROM poly_dearboard.trader_positions p
-        LEFT JOIN (SELECT asset_id, latest_price FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
-        LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
-        WHERE p.trader IN (SELECT trader FROM trader_pnl)
-          AND rp.resolved_price IS NULL
-          AND toFloat64(lp.latest_price) > 0.01
-          AND toFloat64(lp.latest_price) < 0.99
-          AND abs(p.buy_amount - p.sell_amount) > 0.01
-        ORDER BY abs(toFloat64(p.buy_amount - p.sell_amount)) * toFloat64(lp.latest_price) DESC"
-    );
+    let (trader_filter, trader_count) = if let Some(ref list_id) = params.list_id {
+        // List mode: load addresses from SQLite
+        let owner = user.0.clone();
+        let addresses = {
+            let conn = state.user_db.lock().unwrap_or_else(|p| p.into_inner());
+            db::get_list_member_addresses(&conn, list_id, &owner)
+                .map_err(|e| match e {
+                    db::ListError::NotFound => (StatusCode::NOT_FOUND, "List not found".into()),
+                    _ => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to load list".into()),
+                })?
+        };
+        let count = addresses.len() as u32;
+        let in_list = addresses.into_iter().take(100)
+            .map(|a| format!("'{a}'"))
+            .collect::<Vec<_>>()
+            .join(",");
+        (in_list, count)
+    } else {
+        // Top-N mode (default)
+        let top = params.top.unwrap_or(10).clamp(5, 50);
+        (String::new(), top)
+    };
+
+    let query = if params.list_id.is_some() {
+        // List mode: filter by explicit trader addresses (no ranking)
+        format!(
+            "WITH
+                resolved AS (
+                    SELECT asset_id, toNullable(toFloat64(resolved_price)) AS resolved_price
+                    FROM poly_dearboard.resolved_prices FINAL
+                )
+            SELECT
+                toString(p.trader) AS trader,
+                p.asset_id AS asset_id,
+                toString(p.buy_amount - p.sell_amount) AS net_tokens,
+                toString(if(p.buy_amount > toDecimal128(0, 6),
+                    ROUND(p.buy_usdc / p.buy_amount, 6),
+                    toDecimal128(0, 6))) AS avg_entry,
+                toString(toFloat64(lp.latest_price)) AS latest_price,
+                toString(abs(toFloat64(p.buy_amount - p.sell_amount)) * toFloat64(lp.latest_price)) AS exposure,
+                toString(ROUND((p.sell_usdc - p.buy_usdc) + (p.buy_amount - p.sell_amount) * toFloat64(lp.latest_price), 6)) AS pnl
+            FROM poly_dearboard.trader_positions p
+            LEFT JOIN (SELECT asset_id, latest_price FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
+            LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
+            WHERE p.trader IN ({trader_filter})
+              AND rp.resolved_price IS NULL
+              AND toFloat64(lp.latest_price) > 0.01
+              AND toFloat64(lp.latest_price) < 0.99
+              AND abs(p.buy_amount - p.sell_amount) > 0.01
+            ORDER BY abs(toFloat64(p.buy_amount - p.sell_amount)) * toFloat64(lp.latest_price) DESC"
+        )
+    } else {
+        // Top-N mode: use CTE to rank traders by PnL
+        let top = trader_count;
+        let exclude = exclude_clause();
+        format!(
+            "WITH
+                resolved AS (
+                    SELECT asset_id, toNullable(toFloat64(resolved_price)) AS resolved_price
+                    FROM poly_dearboard.resolved_prices FINAL
+                ),
+                trader_pnl AS (
+                    SELECT p.trader,
+                           sum((p.sell_usdc - p.buy_usdc) + (p.buy_amount - p.sell_amount) * coalesce(rp.resolved_price, toFloat64(lp.latest_price))) AS total_pnl
+                    FROM poly_dearboard.trader_positions p
+                    LEFT JOIN (SELECT asset_id, latest_price FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
+                    LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
+                    WHERE p.trader NOT IN ({exclude})
+                    GROUP BY p.trader
+                    ORDER BY total_pnl DESC
+                    LIMIT {top}
+                )
+            SELECT
+                toString(p.trader) AS trader,
+                p.asset_id AS asset_id,
+                toString(p.buy_amount - p.sell_amount) AS net_tokens,
+                toString(if(p.buy_amount > toDecimal128(0, 6),
+                    ROUND(p.buy_usdc / p.buy_amount, 6),
+                    toDecimal128(0, 6))) AS avg_entry,
+                toString(toFloat64(lp.latest_price)) AS latest_price,
+                toString(abs(toFloat64(p.buy_amount - p.sell_amount)) * toFloat64(lp.latest_price)) AS exposure,
+                toString(ROUND((p.sell_usdc - p.buy_usdc) + (p.buy_amount - p.sell_amount) * toFloat64(lp.latest_price), 6)) AS pnl
+            FROM poly_dearboard.trader_positions p
+            LEFT JOIN (SELECT asset_id, latest_price FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
+            LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
+            WHERE p.trader IN (SELECT trader FROM trader_pnl)
+              AND rp.resolved_price IS NULL
+              AND toFloat64(lp.latest_price) > 0.01
+              AND toFloat64(lp.latest_price) < 0.99
+              AND abs(p.buy_amount - p.sell_amount) > 0.01
+            ORDER BY abs(toFloat64(p.buy_amount - p.sell_amount)) * toFloat64(lp.latest_price) DESC"
+        )
+    };
 
     let rows = state
         .db
@@ -2454,7 +2542,7 @@ pub async fn copy_portfolio(
         unique_markets: positions.len() as u32,
         total_exposure: format!("{total_exposure:.6}"),
         total_pnl: format!("{total_pnl:.6}"),
-        top_n: top,
+        top_n: trader_count,
     };
 
     Ok(Json(CopyPortfolioResponse { positions, summary }))
@@ -2466,4 +2554,122 @@ fn shorten_id(id: &str) -> String {
     } else {
         format!("{}...{}", &id[..6], &id[id.len() - 4..])
     }
+}
+
+// ---------------------------------------------------------------------------
+// Trader Lists CRUD
+// ---------------------------------------------------------------------------
+
+fn map_list_error(e: db::ListError) -> (StatusCode, String) {
+    match e {
+        db::ListError::LimitExceeded(msg) => (StatusCode::BAD_REQUEST, msg.into()),
+        db::ListError::DuplicateName => (StatusCode::CONFLICT, "A list with this name already exists".into()),
+        db::ListError::NotFound => (StatusCode::NOT_FOUND, "List not found".into()),
+        db::ListError::Db(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+pub async fn list_trader_lists(
+    State(state): State<AppState>,
+    AuthUser(owner): AuthUser,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let conn = state.user_db.lock().unwrap_or_else(|p| p.into_inner());
+    let lists = db::list_trader_lists(&conn, &owner)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(lists))
+}
+
+pub async fn create_trader_list(
+    State(state): State<AppState>,
+    AuthUser(owner): AuthUser,
+    Json(req): Json<CreateListRequest>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let name = req.name.trim().to_string();
+    if name.is_empty() || name.len() > 50 {
+        return Err((StatusCode::BAD_REQUEST, "Name must be 1-50 characters".into()));
+    }
+    let conn = state.user_db.lock().unwrap_or_else(|p| p.into_inner());
+    let list = db::create_trader_list(&conn, &owner, &name).map_err(map_list_error)?;
+    Ok((StatusCode::CREATED, Json(list)))
+}
+
+pub async fn get_trader_list(
+    State(state): State<AppState>,
+    AuthUser(owner): AuthUser,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let conn = state.user_db.lock().unwrap_or_else(|p| p.into_inner());
+    let detail = db::get_trader_list(&conn, &id, &owner).map_err(map_list_error)?;
+    Ok(Json(detail))
+}
+
+pub async fn rename_trader_list(
+    State(state): State<AppState>,
+    AuthUser(owner): AuthUser,
+    Path(id): Path<String>,
+    Json(req): Json<RenameListRequest>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let name = req.name.trim().to_string();
+    if name.is_empty() || name.len() > 50 {
+        return Err((StatusCode::BAD_REQUEST, "Name must be 1-50 characters".into()));
+    }
+    let conn = state.user_db.lock().unwrap_or_else(|p| p.into_inner());
+    db::rename_trader_list(&conn, &id, &owner, &name).map_err(map_list_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn delete_trader_list(
+    State(state): State<AppState>,
+    AuthUser(owner): AuthUser,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let conn = state.user_db.lock().unwrap_or_else(|p| p.into_inner());
+    db::delete_trader_list(&conn, &id, &owner).map_err(map_list_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn add_list_members(
+    State(state): State<AppState>,
+    AuthUser(owner): AuthUser,
+    Path(id): Path<String>,
+    Json(req): Json<AddMembersRequest>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    if req.addresses.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "At least one address required".into()));
+    }
+
+    let labels = req.labels.unwrap_or_default();
+
+    let members: Vec<(String, Option<String>)> = req
+        .addresses
+        .iter()
+        .enumerate()
+        .map(|(i, addr)| {
+            let validated = middleware::validate_eth_address(addr)
+                .map_err(|_| (StatusCode::BAD_REQUEST, format!("Invalid address: {addr}")))?;
+            let label = labels.get(i).and_then(|l| l.clone());
+            Ok((validated, label))
+        })
+        .collect::<Result<Vec<_>, (StatusCode, String)>>()?;
+
+    let conn = state.user_db.lock().unwrap_or_else(|p| p.into_inner());
+    db::add_list_members(&conn, &id, &owner, &members).map_err(map_list_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn remove_list_members(
+    State(state): State<AppState>,
+    AuthUser(owner): AuthUser,
+    Path(id): Path<String>,
+    Json(req): Json<RemoveMembersRequest>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let addresses: Vec<String> = req
+        .addresses
+        .iter()
+        .map(|a| a.to_lowercase())
+        .collect();
+
+    let conn = state.user_db.lock().unwrap_or_else(|p| p.into_inner());
+    db::remove_list_members(&conn, &id, &owner, &addresses).map_err(map_list_error)?;
+    Ok(StatusCode::NO_CONTENT)
 }

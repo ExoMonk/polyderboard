@@ -112,13 +112,19 @@ pub async fn run(client: clickhouse::Client, port: u16) {
         .route("/smart-money", get(routes::smart_money))
         .route("/trader/{address}/profile", get(routes::trader_profile))
         .route("/lab/backtest", post(routes::backtest))
-        .route("/lab/copy-portfolio", get(routes::copy_portfolio));
+        .route("/lab/copy-portfolio", get(routes::copy_portfolio))
+        // Trader Lists CRUD
+        .route("/lists", get(routes::list_trader_lists).post(routes::create_trader_list))
+        .route("/lists/{id}", get(routes::get_trader_list).patch(routes::rename_trader_list).delete(routes::delete_trader_list))
+        .route("/lists/{id}/members", post(routes::add_list_members).delete(routes::remove_list_members));
 
     let app = Router::new()
         .nest("/api", public_api.merge(protected_api))
         .route("/webhooks/rindexer", post(alerts::webhook_handler))
         .route("/ws/alerts", get(alerts::ws_handler))
         .route("/ws/trades", get(alerts::trades_ws_handler))
+        // Signal feed WS (auth handled via query param in handler)
+        .route("/ws/signals", get(alerts::signals_ws_handler))
         .layer(cors)
         .with_state(state);
 

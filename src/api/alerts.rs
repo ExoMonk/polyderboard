@@ -1,5 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
+use std::time::{Duration, Instant};
 
 use axum::{
     extract::{
@@ -515,6 +516,260 @@ async fn handle_trades_ws(
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
+            }
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Err(_)) => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GET /ws/signals — Trader-filtered signal feed with convergence detection
+// ---------------------------------------------------------------------------
+// JWT is passed via query param since WebSocket upgrade can't send headers.
+// Accepted tradeoff: token appears in logs. Data sensitivity is low (public
+// trader addresses). See spec 09-polylab-evolution.md for design rationale.
+
+#[derive(Clone, Serialize)]
+#[serde(tag = "kind")]
+pub enum SignalMessage {
+    Trade(LiveTrade),
+    Convergence(ConvergenceAlert),
+    Lag { dropped: u64 },
+}
+
+#[derive(Clone, Serialize)]
+pub struct ConvergenceAlert {
+    pub question: String,
+    pub asset_id: String,
+    pub outcome: String,
+    pub traders: Vec<String>,
+    pub trader_count: u32,
+    pub window_seconds: u64,
+    pub side: String,
+    pub total_usdc: f64,
+}
+
+#[derive(Deserialize)]
+pub struct SignalWsParams {
+    list_id: Option<String>,
+    top_n: Option<u32>,
+    token: String,
+}
+
+pub async fn signals_ws_handler(
+    State(state): State<AppState>,
+    Query(params): Query<SignalWsParams>,
+    ws: WebSocketUpgrade,
+) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+    // Validate JWT from query param before upgrading
+    let owner = super::auth::validate_jwt(&params.token, &state.jwt_secret)
+        .map_err(|_| (axum::http::StatusCode::UNAUTHORIZED, "Invalid token".into()))?;
+
+    // Mutual exclusion: exactly one of list_id or top_n
+    if params.list_id.is_some() && params.top_n.is_some() {
+        return Err((axum::http::StatusCode::BAD_REQUEST, "Specify list_id or top_n, not both".into()));
+    }
+
+    let trader_set: HashSet<String> = if let Some(ref list_id) = params.list_id {
+        // Load from SQLite list
+        let conn = state.user_db.lock().unwrap_or_else(|p| p.into_inner());
+        let addrs = super::db::get_list_member_addresses(&conn, list_id, &owner)
+            .map_err(|_| (axum::http::StatusCode::NOT_FOUND, "List not found".into()))?;
+        addrs.into_iter().collect()
+    } else {
+        // Top N from ClickHouse leaderboard (default 20)
+        let top_n = params.top_n.unwrap_or(20).clamp(1, 50);
+        let exclude = super::routes::exclude_clause();
+        let query = format!(
+            "WITH resolved AS (
+                SELECT asset_id, toNullable(toFloat64(resolved_price)) AS resolved_price
+                FROM poly_dearboard.resolved_prices FINAL
+            )
+            SELECT toString(p.trader) AS address
+            FROM poly_dearboard.trader_positions p
+            LEFT JOIN (SELECT asset_id, latest_price FROM poly_dearboard.asset_latest_price FINAL) AS lp ON p.asset_id = lp.asset_id
+            LEFT JOIN resolved rp ON p.asset_id = rp.asset_id
+            WHERE p.trader NOT IN ({exclude})
+            GROUP BY p.trader
+            ORDER BY sum((p.sell_usdc - p.buy_usdc) + (p.buy_amount - p.sell_amount) * coalesce(rp.resolved_price, toFloat64(lp.latest_price))) DESC
+            LIMIT {top_n}"
+        );
+
+        #[derive(clickhouse::Row, serde::Deserialize)]
+        struct Addr {
+            address: String,
+        }
+
+        let rows: Vec<Addr> = state.db.query(&query)
+            .fetch_all::<Addr>()
+            .await
+            .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        rows.into_iter().map(|r| r.address).collect()
+    };
+
+    if trader_set.is_empty() {
+        return Err((axum::http::StatusCode::BAD_REQUEST, "No traders found".into()));
+    }
+
+    Ok(ws.on_upgrade(move |socket| {
+        handle_signal_ws(socket, state.trade_tx.subscribe(), trader_set)
+    }))
+}
+
+struct ConvergenceDetector {
+    // asset_id → [(trader, timestamp, side, usdc_amount)]
+    recent_trades: HashMap<String, Vec<(String, Instant, String, f64)>>,
+    window: Duration,
+    threshold: usize,
+    last_alert: HashMap<String, Instant>,
+    max_assets: usize,
+}
+
+impl ConvergenceDetector {
+    fn new() -> Self {
+        Self {
+            recent_trades: HashMap::new(),
+            window: Duration::from_secs(300), // 5 minutes
+            threshold: 2,
+            last_alert: HashMap::new(),
+            max_assets: 500,
+        }
+    }
+
+    fn record_trade(&mut self, trade: &LiveTrade) -> Option<ConvergenceAlert> {
+        let now = Instant::now();
+        let asset_id = &trade.asset_id;
+        let usdc: f64 = trade.usdc_amount.parse().unwrap_or(0.0);
+
+        // Insert into recent_trades
+        let entries = self.recent_trades.entry(asset_id.clone()).or_default();
+        entries.push((trade.trader.clone(), now, trade.side.clone(), usdc));
+
+        // Evict old entries for this asset
+        entries.retain(|(_, ts, _, _)| now.duration_since(*ts) < self.window);
+
+        // Count distinct traders
+        let distinct_traders: HashSet<&str> = entries.iter().map(|(t, _, _, _)| t.as_str()).collect();
+        let count = distinct_traders.len();
+
+        if count >= self.threshold {
+            // Dedup: don't re-fire for same asset within 60s
+            if let Some(last) = self.last_alert.get(asset_id) {
+                if now.duration_since(*last) < Duration::from_secs(60) {
+                    return None;
+                }
+            }
+            self.last_alert.insert(asset_id.clone(), now);
+
+            // Build alert
+            let traders: Vec<String> = distinct_traders.into_iter().map(String::from).collect();
+            let total_usdc: f64 = entries.iter().map(|(_, _, _, u)| u).sum();
+
+            // Dominant side
+            let buy_count = entries.iter().filter(|(_, _, s, _)| s == "buy").count();
+            let sell_count = entries.len() - buy_count;
+            let side = if buy_count >= sell_count { "BUY" } else { "SELL" };
+
+            return Some(ConvergenceAlert {
+                question: trade.question.clone(),
+                asset_id: asset_id.clone(),
+                outcome: trade.outcome.clone(),
+                traders,
+                trader_count: count as u32,
+                window_seconds: 300,
+                side: side.into(),
+                total_usdc,
+            });
+        }
+
+        None
+    }
+
+    /// Periodic cleanup: remove entries older than window across all assets.
+    fn sweep(&mut self) {
+        let now = Instant::now();
+        self.recent_trades.retain(|_, entries| {
+            entries.retain(|(_, ts, _, _)| now.duration_since(*ts) < self.window);
+            !entries.is_empty()
+        });
+        // Also clean stale alert dedup entries
+        self.last_alert.retain(|_, ts| now.duration_since(*ts) < Duration::from_secs(120));
+
+        // Hard cap on tracked assets — drop oldest if exceeded
+        while self.recent_trades.len() > self.max_assets {
+            // Find the oldest entry across all assets and remove that asset
+            if let Some(oldest_key) = self
+                .recent_trades
+                .iter()
+                .min_by_key(|(_, entries)| {
+                    entries.iter().map(|(_, ts, _, _)| *ts).min().unwrap_or(now)
+                })
+                .map(|(k, _)| k.clone())
+            {
+                self.recent_trades.remove(&oldest_key);
+            } else {
+                break;
+            }
+        }
+    }
+}
+
+async fn handle_signal_ws(
+    mut socket: WebSocket,
+    mut rx: broadcast::Receiver<LiveTrade>,
+    trader_set: HashSet<String>,
+) {
+    let mut detector = ConvergenceDetector::new();
+    let mut sweep_interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+    sweep_interval.tick().await; // skip immediate tick
+
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Ok(trade) => {
+                        if !trader_set.contains(&trade.trader.to_lowercase()) {
+                            continue;
+                        }
+
+                        // Send trade signal
+                        let msg = SignalMessage::Trade(trade.clone());
+                        let json = match serde_json::to_string(&msg) {
+                            Ok(j) => j,
+                            Err(_) => continue,
+                        };
+                        if socket.send(Message::Text(json.into())).await.is_err() {
+                            break;
+                        }
+
+                        // Check convergence
+                        if let Some(alert) = detector.record_trade(&trade) {
+                            let alert_msg = SignalMessage::Convergence(alert);
+                            if let Ok(json) = serde_json::to_string(&alert_msg) {
+                                if socket.send(Message::Text(json.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("Signal WS client lagged, skipped {n} trades");
+                        let lag_msg = SignalMessage::Lag { dropped: n };
+                        if let Ok(json) = serde_json::to_string(&lag_msg) {
+                            let _ = socket.send(Message::Text(json.into())).await;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            _ = sweep_interval.tick() => {
+                detector.sweep();
             }
             msg = socket.recv() => {
                 match msg {

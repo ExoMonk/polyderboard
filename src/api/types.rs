@@ -415,11 +415,60 @@ pub struct SmartMoneyResponse {
     pub top: u32,
 }
 
+// -- Trader Lists --
+
+#[derive(Serialize)]
+pub struct TraderList {
+    pub id: String,
+    pub name: String,
+    pub member_count: u32,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Serialize)]
+pub struct TraderListDetail {
+    pub id: String,
+    pub name: String,
+    pub members: Vec<TraderListMember>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Serialize)]
+pub struct TraderListMember {
+    pub address: String,
+    pub label: Option<String>,
+    pub added_at: String,
+}
+
+#[derive(Deserialize)]
+pub struct CreateListRequest {
+    pub name: String,
+}
+
+#[derive(Deserialize)]
+pub struct RenameListRequest {
+    pub name: String,
+}
+
+#[derive(Deserialize)]
+pub struct AddMembersRequest {
+    pub addresses: Vec<String>,
+    pub labels: Option<Vec<Option<String>>>,
+}
+
+#[derive(Deserialize)]
+pub struct RemoveMembersRequest {
+    pub addresses: Vec<String>,
+}
+
 // -- PolyLab Backtest --
 
 #[derive(Deserialize)]
 pub struct BacktestRequest {
-    pub top_n: u32,
+    pub top_n: Option<u32>,
+    pub list_id: Option<String>,
     pub timeframe: String,
     pub initial_capital: Option<f64>,
     pub copy_pct: Option<f64>,
@@ -506,6 +555,7 @@ pub struct BacktestTrader {
 #[derive(Deserialize)]
 pub struct CopyPortfolioParams {
     pub top: Option<u32>,
+    pub list_id: Option<String>,
 }
 
 #[derive(Row, Deserialize)]
