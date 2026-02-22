@@ -125,28 +125,37 @@ pub async fn webhook_handler(
         }
     }
 
+    let ws_active = state
+        .ws_subscriber_active
+        .load(std::sync::atomic::Ordering::SeqCst);
+
     for event in &payload.event_data {
         let is_live = is_event_live(event);
 
         let mut alert = {
             let cache = state.market_cache.read().await;
 
-            // Broadcast ALL trades for /ws/trades subscribers (before whale filter)
-            // but only if the event is live (not a backfill replay)
+            // Broadcast trades + queue metadata persistence.
+            // When ws_subscriber is active, it owns trade broadcasts — webhook only persists metadata.
             if payload.event_name == "OrderFilled" && is_live {
                 if let Some(live_trade) = build_live_trade(event, &cache) {
-                    // Queue metadata persistence for this token (batched writer)
+                    // Always persist metadata (regardless of ws_active)
                     if let Some(info) = cache.get(&live_trade.cache_key) {
                         let _ = state
                             .metadata_tx
                             .try_send((live_trade.asset_id.clone(), info.clone()));
                     }
-                    let _ = state.trade_tx.send(live_trade);
+                    // Only broadcast if WS subscriber is not active (fallback mode)
+                    if !ws_active {
+                        let _ = state.trade_tx.send(live_trade);
+                    }
                 }
             }
 
             match payload.event_name.as_str() {
-                "OrderFilled" => parse_order_filled(event, &cache),
+                // Only produce whale alerts from webhook when WS subscriber is down
+                "OrderFilled" if !ws_active => parse_order_filled(event, &cache),
+                "OrderFilled" => None, // WS subscriber handles whale alerts
                 "ConditionResolution" => parse_condition_resolution(event, &cache),
                 _ => None,
             }

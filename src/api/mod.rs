@@ -7,3 +7,4 @@ pub mod routes;
 pub mod scanner;
 pub mod server;
 pub mod types;
+pub mod ws_subscriber;

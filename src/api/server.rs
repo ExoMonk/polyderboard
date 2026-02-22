@@ -1,10 +1,11 @@
 use axum::{routing::{get, post}, Router};
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, RwLock};
 use tower_http::cors::{Any, CorsLayer};
 
-use super::{alerts, db, markets, routes, scanner, types::LeaderboardResponse};
+use super::{alerts, db, markets, routes, scanner, ws_subscriber, types::LeaderboardResponse};
 
 /// Cached leaderboard response with expiry.
 pub struct CachedResponse {
@@ -25,6 +26,7 @@ pub struct AppState {
     pub leaderboard_cache: LeaderboardCache,
     pub user_db: Arc<Mutex<rusqlite::Connection>>,
     pub jwt_secret: Arc<Vec<u8>>,
+    pub ws_subscriber_active: Arc<AtomicBool>,
 }
 
 async fn metadata_writer(
@@ -116,6 +118,7 @@ pub async fn run(client: clickhouse::Client, port: u16) {
         leaderboard_cache: Arc::new(RwLock::new(HashMap::new())),
         user_db: Arc::new(Mutex::new(user_conn)),
         jwt_secret: Arc::new(jwt_secret.into_bytes()),
+        ws_subscriber_active: Arc::new(AtomicBool::new(false)),
     };
 
     // Pre-warm the market name cache in the background, then refresh periodically
@@ -166,6 +169,18 @@ pub async fn run(client: clickhouse::Client, port: u16) {
         let http = state.http.clone();
         let alert_tx = state.alert_tx.clone();
         tokio::spawn(scanner::run(http, rpc_url, alert_tx));
+    }
+
+    // Direct eth_subscribe for low-latency live trade feed
+    {
+        let ws_flag = state.ws_subscriber_active.clone();
+        let trade_tx = state.trade_tx.clone();
+        let alert_tx = state.alert_tx.clone();
+        let cache = state.market_cache.clone();
+        let http = state.http.clone();
+        let rpc_url = std::env::var("POLYGON_RPC_URL")
+            .unwrap_or_else(|_| "http://erpc:4000/main/evm/137".into());
+        tokio::spawn(ws_subscriber::run(ws_flag, trade_tx, alert_tx, cache, http, rpc_url));
     }
 
     // Public API routes (no auth required)
