@@ -2,7 +2,7 @@ import { lazy, Suspense } from "react";
 import { Routes, Route, useLocation } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import Layout from "./components/Layout";
-import AuthGate from "./components/AuthGate";
+import { AuthProvider } from "./context/AuthContext";
 import { pageTransition } from "./lib/motion";
 
 const Dashboard = lazy(() => import("./pages/Dashboard"));
@@ -16,7 +16,7 @@ export default function App() {
   const location = useLocation();
 
   return (
-    <AuthGate>
+    <AuthProvider>
     <Layout>
       <Suspense fallback={null}>
       <AnimatePresence mode="wait">
@@ -39,6 +39,6 @@ export default function App() {
       </AnimatePresence>
       </Suspense>
     </Layout>
-    </AuthGate>
+    </AuthProvider>
   );
 }

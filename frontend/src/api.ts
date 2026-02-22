@@ -20,6 +20,46 @@ import type {
 } from "./types";
 
 const BASE = import.meta.env.VITE_API_URL || "/api";
+const JWT_KEY = "pd_jwt";
+
+// -- Auth helpers --
+
+function authHeaders(): HeadersInit {
+  const token = localStorage.getItem(JWT_KEY);
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function authFetch(url: string, init?: RequestInit): Promise<Response> {
+  const headers = { ...authHeaders(), ...init?.headers };
+  return fetch(url, { ...init, headers });
+}
+
+export async function fetchNonce(
+  address: string,
+): Promise<{ nonce: string; issuedAt: string }> {
+  const res = await fetch(
+    `${BASE}/auth/nonce?address=${encodeURIComponent(address)}`,
+  );
+  if (!res.ok) throw new Error(`Nonce fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function verifySignature(body: {
+  address: string;
+  signature: string;
+  nonce: string;
+  issued_at: string;
+}): Promise<{ token: string; address: string }> {
+  const res = await fetch(`${BASE}/auth/verify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Signature verification failed: ${res.status}`);
+  return res.json();
+}
+
+// -- Protected endpoints --
 
 export async function fetchLeaderboard(params: {
   sort?: SortColumn;
@@ -34,13 +74,13 @@ export async function fetchLeaderboard(params: {
   if (params.limit) sp.set("limit", String(params.limit));
   if (params.offset !== undefined) sp.set("offset", String(params.offset));
   if (params.timeframe && params.timeframe !== "all") sp.set("timeframe", params.timeframe);
-  const res = await fetch(`${BASE}/leaderboard?${sp}`);
+  const res = await authFetch(`${BASE}/leaderboard?${sp}`);
   if (!res.ok) throw new Error(`Leaderboard fetch failed: ${res.status}`);
   return res.json();
 }
 
 export async function fetchTrader(address: string): Promise<TraderSummary> {
-  const res = await fetch(`${BASE}/trader/${address}`);
+  const res = await authFetch(`${BASE}/trader/${address}`);
   if (!res.ok) throw new Error(`Trader fetch failed: ${res.status}`);
   return res.json();
 }
@@ -53,7 +93,7 @@ export async function fetchTraderTrades(
   if (params.limit) sp.set("limit", String(params.limit));
   if (params.offset !== undefined) sp.set("offset", String(params.offset));
   if (params.side) sp.set("side", params.side);
-  const res = await fetch(`${BASE}/trader/${address}/trades?${sp}`);
+  const res = await authFetch(`${BASE}/trader/${address}/trades?${sp}`);
   if (!res.ok) throw new Error(`Trades fetch failed: ${res.status}`);
   return res.json();
 }
@@ -71,7 +111,7 @@ export async function fetchHotMarkets(params?: {
   const sp = new URLSearchParams();
   if (params?.period) sp.set("period", params.period);
   if (params?.limit) sp.set("limit", String(params.limit));
-  const res = await fetch(`${BASE}/markets/hot?${sp}`);
+  const res = await authFetch(`${BASE}/markets/hot?${sp}`);
   if (!res.ok) throw new Error(`Hot markets fetch failed: ${res.status}`);
   return res.json();
 }
@@ -83,13 +123,13 @@ export async function fetchRecentTrades(params?: {
   const sp = new URLSearchParams();
   if (params?.limit) sp.set("limit", String(params.limit));
   if (params?.token_id) sp.set("token_id", params.token_id);
-  const res = await fetch(`${BASE}/trades/recent?${sp}`);
+  const res = await authFetch(`${BASE}/trades/recent?${sp}`);
   if (!res.ok) throw new Error(`Recent trades fetch failed: ${res.status}`);
   return res.json();
 }
 
 export async function fetchTraderPositions(address: string): Promise<PositionsResponse> {
-  const res = await fetch(`${BASE}/trader/${address}/positions`);
+  const res = await authFetch(`${BASE}/trader/${address}/positions`);
   if (!res.ok) throw new Error(`Positions fetch failed: ${res.status}`);
   return res.json();
 }
@@ -97,7 +137,7 @@ export async function fetchTraderPositions(address: string): Promise<PositionsRe
 export async function fetchPnlChart(address: string, timeframe?: PnlTimeframe): Promise<PnlChartResponse> {
   const sp = new URLSearchParams();
   if (timeframe && timeframe !== "all") sp.set("timeframe", timeframe);
-  const res = await fetch(`${BASE}/trader/${address}/pnl-chart?${sp}`);
+  const res = await authFetch(`${BASE}/trader/${address}/pnl-chart?${sp}`);
   if (!res.ok) throw new Error(`PnL chart fetch failed: ${res.status}`);
   return res.json();
 }
@@ -106,13 +146,13 @@ export async function fetchMarketResolve(
   tokenIds: string,
 ): Promise<Record<string, ResolvedMarket>> {
   const sp = new URLSearchParams({ token_ids: tokenIds });
-  const res = await fetch(`${BASE}/market/resolve?${sp}`);
+  const res = await authFetch(`${BASE}/market/resolve?${sp}`);
   if (!res.ok) throw new Error(`Market resolve failed: ${res.status}`);
   return res.json();
 }
 
 export async function fetchTraderProfile(address: string): Promise<TraderProfile> {
-  const res = await fetch(`${BASE}/trader/${address}/profile`);
+  const res = await authFetch(`${BASE}/trader/${address}/profile`);
   if (!res.ok) throw new Error(`Profile fetch failed: ${res.status}`);
   return res.json();
 }
@@ -123,7 +163,7 @@ export async function fetchBacktest(params: {
   initialCapital?: number;
   copyPct?: number;
 }): Promise<BacktestResponse> {
-  const res = await fetch(`${BASE}/lab/backtest`, {
+  const res = await authFetch(`${BASE}/lab/backtest`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -146,7 +186,7 @@ export async function fetchSmartMoney(params?: {
     sp.set("timeframe", params.timeframe);
   if (params?.top) sp.set("top", String(params.top));
   const qs = sp.toString();
-  const res = await fetch(`${BASE}/smart-money${qs ? `?${qs}` : ""}`);
+  const res = await authFetch(`${BASE}/smart-money${qs ? `?${qs}` : ""}`);
   if (!res.ok) throw new Error(`Smart money fetch failed: ${res.status}`);
   return res.json();
 }
@@ -157,7 +197,7 @@ export async function fetchCopyPortfolio(params?: {
   const sp = new URLSearchParams();
   if (params?.top) sp.set("top", String(params.top));
   const qs = sp.toString();
-  const res = await fetch(`${BASE}/lab/copy-portfolio${qs ? `?${qs}` : ""}`);
+  const res = await authFetch(`${BASE}/lab/copy-portfolio${qs ? `?${qs}` : ""}`);
   if (!res.ok) throw new Error(`Copy portfolio fetch failed: ${res.status}`);
   return res.json();
 }
