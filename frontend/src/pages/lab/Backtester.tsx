@@ -25,6 +25,7 @@ import {
 import { useDebounce } from "../../hooks/useDebounce";
 import Spinner from "../../components/Spinner";
 import { Pill, SectionHeader, rankClass, TOP_N_OPTIONS, TOOLTIP_STYLE } from "./shared";
+import ListSelector from "./ListSelector";
 
 const TIMEFRAMES: { value: BacktestTimeframe; label: string }[] = [
   { value: "7d", label: "7D" },
@@ -54,6 +55,7 @@ type ChartMode = "value" | "pnl" | "pnl_pct";
 
 export default function Backtester() {
   const [topN, setTopN] = useState<number>(10);
+  const [listId, setListId] = useState<string | null>(null);
   const [timeframe, setTimeframe] = useState<BacktestTimeframe>("30d");
   const [capital, setCapital] = useState<number>(10000);
   const [copyPct, setCopyPct] = useState<number>(1.0);
@@ -62,12 +64,20 @@ export default function Backtester() {
   const debouncedCapital = useDebounce(capital, 500);
 
   const { data, isLoading, isError } = useQuery({
-    queryKey: ["backtest", topN, timeframe, debouncedCapital, copyPct],
-    queryFn: () => fetchBacktest({ topN, timeframe, initialCapital: debouncedCapital, copyPct }),
+    queryKey: ["backtest", listId, topN, timeframe, debouncedCapital, copyPct],
+    queryFn: () =>
+      fetchBacktest({
+        topN: listId ? undefined : topN,
+        listId: listId ?? undefined,
+        timeframe,
+        initialCapital: debouncedCapital,
+        copyPct,
+      }),
     staleTime: 60_000,
   });
 
-  const perTraderBudget = (debouncedCapital * copyPct) / topN;
+  const traderCount = listId ? (data?.summary.traders_count ?? 1) : topN;
+  const perTraderBudget = (debouncedCapital * copyPct) / traderCount;
   const initialCap = data?.config.initial_capital ?? debouncedCapital;
 
   const chartData = (data?.portfolio_curve ?? []).map((p) => ({
@@ -142,18 +152,24 @@ export default function Backtester() {
             </div>
           </div>
 
-          {/* Row 2: Top N + Timeframe + Budget readout */}
+          {/* Row 2: Source + Top N + Timeframe + Budget readout */}
           <div className="flex flex-wrap items-center gap-5">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider">Top</span>
-              <div className="flex gap-1.5">
-                {TOP_N_OPTIONS.map((n) => (
-                  <Pill key={n} active={topN === n} onClick={() => setTopN(n)}>
-                    {n}
-                  </Pill>
-                ))}
-              </div>
-            </div>
+            <ListSelector selectedId={listId} onSelect={setListId} />
+            {!listId && (
+              <>
+                <div className="h-5 w-px bg-[var(--border-glow)] hidden sm:block" />
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider">Top</span>
+                  <div className="flex gap-1.5">
+                    {TOP_N_OPTIONS.map((n) => (
+                      <Pill key={n} active={topN === n} onClick={() => setTopN(n)}>
+                        {n}
+                      </Pill>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
             <div className="h-5 w-px bg-[var(--border-glow)] hidden sm:block" />
             <div className="flex items-center gap-2">
               <span className="text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider">Period</span>

@@ -13,19 +13,26 @@ import {
 } from "../../lib/motion";
 import Spinner from "../../components/Spinner";
 import { Pill, SectionHeader, TOP_N_OPTIONS } from "./shared";
+import ListSelector from "./ListSelector";
 
 export default function CopyPortfolio() {
   const [topN, setTopN] = useState<number>(10);
+  const [listId, setListId] = useState<string | null>(null);
 
   const { data, isLoading, isError } = useQuery({
-    queryKey: ["copy-portfolio", topN],
-    queryFn: () => fetchCopyPortfolio({ top: topN }),
+    queryKey: ["copy-portfolio", listId, topN],
+    queryFn: () =>
+      fetchCopyPortfolio({
+        top: listId ? undefined : topN,
+        listId: listId ?? undefined,
+      }),
     staleTime: 60_000,
   });
 
   const positions = data?.positions ?? [];
   const summary = data?.summary;
   const totalPnl = parseFloat(summary?.total_pnl ?? "0");
+  const traderCount = listId ? (summary?.top_n ?? 1) : topN;
 
   return (
     <>
@@ -39,17 +46,25 @@ export default function CopyPortfolio() {
         <SectionHeader dot="bg-[var(--accent-blue)] shadow-[0_0_6px_var(--accent-blue)]">
           Portfolio Configuration
         </SectionHeader>
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider">
-            Top Traders
-          </span>
-          <div className="flex gap-1.5">
-            {TOP_N_OPTIONS.map((n) => (
-              <Pill key={n} active={topN === n} onClick={() => setTopN(n)}>
-                {n}
-              </Pill>
-            ))}
-          </div>
+        <div className="flex flex-wrap items-center gap-5">
+          <ListSelector selectedId={listId} onSelect={setListId} />
+          {!listId && (
+            <>
+              <div className="h-5 w-px bg-[var(--border-glow)] hidden sm:block" />
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider">
+                  Top Traders
+                </span>
+                <div className="flex gap-1.5">
+                  {TOP_N_OPTIONS.map((n) => (
+                    <Pill key={n} active={topN === n} onClick={() => setTopN(n)}>
+                      {n}
+                    </Pill>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </motion.div>
 
@@ -172,12 +187,12 @@ export default function CopyPortfolio() {
                       <td className="px-6 py-3 text-center">
                         <div className="flex flex-col items-center gap-1">
                           <span className="font-mono font-bold text-[var(--accent-blue)]">
-                            {p.convergence}/{topN}
+                            {p.convergence}/{traderCount}
                           </span>
                           <div className="w-12 h-1 rounded-full bg-[var(--bg-deep)] overflow-hidden">
                             <div
                               className="h-full rounded-full bg-[var(--accent-blue)]"
-                              style={{ width: `${(p.convergence / topN) * 100}%` }}
+                              style={{ width: `${(p.convergence / traderCount) * 100}%` }}
                             />
                           </div>
                         </div>

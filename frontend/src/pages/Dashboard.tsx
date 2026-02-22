@@ -10,6 +10,7 @@ import SortHeader from "../components/SortHeader";
 import LabelBadge from "../components/LabelBadge";
 import { labelTooltip } from "../lib/labels";
 import SmartMoney from "../charts/SmartMoney";
+import AddToListButton from "../components/AddToListButton";
 import { formatUsd, formatNumber, formatDate, timeAgo } from "../lib/format";
 import { tapScale } from "../lib/motion";
 
@@ -98,6 +99,7 @@ export default function Dashboard() {
                 <th className="px-4 py-3 text-right">Markets</th>
                 <th className="px-4 py-3 text-right hidden lg:table-cell">First</th>
                 <th className="px-4 py-3 text-right hidden lg:table-cell">Last</th>
+                <th className="px-4 py-3 w-10"></th>
               </tr>
             </thead>
             <tbody>
@@ -139,6 +141,9 @@ export default function Dashboard() {
                     <td className="px-4 py-3 text-right text-[var(--text-secondary)]">{formatNumber(t.markets_traded)}</td>
                     <td className="px-4 py-3 text-right text-[var(--text-secondary)] hidden lg:table-cell">{formatDate(t.first_trade)}</td>
                     <td className="px-4 py-3 text-right text-[var(--text-secondary)] hidden lg:table-cell">{timeAgo(t.last_trade)}</td>
+                    <td className="px-4 py-3 text-center">
+                      <AddToListButton address={t.address} />
+                    </td>
                   </motion.tr>
                 );
               })}

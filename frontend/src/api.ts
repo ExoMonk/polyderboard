@@ -13,6 +13,8 @@ import type {
   BacktestResponse,
   BacktestTimeframe,
   CopyPortfolioResponse,
+  TraderList,
+  TraderListDetail,
   SortColumn,
   SortOrder,
   Timeframe,
@@ -158,20 +160,26 @@ export async function fetchTraderProfile(address: string): Promise<TraderProfile
 }
 
 export async function fetchBacktest(params: {
-  topN: number;
+  topN?: number;
+  listId?: string;
   timeframe: BacktestTimeframe;
   initialCapital?: number;
   copyPct?: number;
 }): Promise<BacktestResponse> {
+  const body: Record<string, unknown> = {
+    timeframe: params.timeframe,
+    initial_capital: params.initialCapital,
+    copy_pct: params.copyPct,
+  };
+  if (params.listId) {
+    body.list_id = params.listId;
+  } else {
+    body.top_n = params.topN;
+  }
   const res = await authFetch(`${BASE}/lab/backtest`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      top_n: params.topN,
-      timeframe: params.timeframe,
-      initial_capital: params.initialCapital,
-      copy_pct: params.copyPct,
-    }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`Backtest fetch failed: ${res.status}`);
   return res.json();
@@ -193,11 +201,69 @@ export async function fetchSmartMoney(params?: {
 
 export async function fetchCopyPortfolio(params?: {
   top?: number;
+  listId?: string;
 }): Promise<CopyPortfolioResponse> {
   const sp = new URLSearchParams();
-  if (params?.top) sp.set("top", String(params.top));
+  if (params?.listId) sp.set("list_id", params.listId);
+  else if (params?.top) sp.set("top", String(params.top));
   const qs = sp.toString();
   const res = await authFetch(`${BASE}/lab/copy-portfolio${qs ? `?${qs}` : ""}`);
   if (!res.ok) throw new Error(`Copy portfolio fetch failed: ${res.status}`);
   return res.json();
+}
+
+// -- Trader Lists --
+
+export async function fetchTraderLists(): Promise<TraderList[]> {
+  const res = await authFetch(`${BASE}/lists`);
+  if (!res.ok) throw new Error(`Lists fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchTraderListDetail(id: string): Promise<TraderListDetail> {
+  const res = await authFetch(`${BASE}/lists/${id}`);
+  if (!res.ok) throw new Error(`List detail fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function createTraderList(name: string): Promise<TraderList> {
+  const res = await authFetch(`${BASE}/lists`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) throw new Error(`Create list failed: ${res.status}`);
+  return res.json();
+}
+
+export async function renameTraderList(id: string, name: string): Promise<void> {
+  const res = await authFetch(`${BASE}/lists/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) throw new Error(`Rename list failed: ${res.status}`);
+}
+
+export async function deleteTraderList(id: string): Promise<void> {
+  const res = await authFetch(`${BASE}/lists/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Delete list failed: ${res.status}`);
+}
+
+export async function addListMembers(id: string, addresses: string[]): Promise<void> {
+  const res = await authFetch(`${BASE}/lists/${id}/members`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ addresses }),
+  });
+  if (!res.ok) throw new Error(`Add members failed: ${res.status}`);
+}
+
+export async function removeListMembers(id: string, addresses: string[]): Promise<void> {
+  const res = await authFetch(`${BASE}/lists/${id}/members`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ addresses }),
+  });
+  if (!res.ok) throw new Error(`Remove members failed: ${res.status}`);
 }

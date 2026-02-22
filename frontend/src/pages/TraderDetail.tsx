@@ -8,6 +8,7 @@ import Spinner from "../components/Spinner";
 import Pagination from "../components/Pagination";
 import LabelBadge from "../components/LabelBadge";
 import PnlChart from "../charts/PnlChart";
+import AddToListButton from "../components/AddToListButton";
 import { formatUsd, formatNumber, formatDate, formatTimestamp, shortenAddress, polygonscanAddress, polygonscanTx, polymarketAddress, formatHoldTime } from "../lib/format";
 import { labelTooltip } from "../lib/labels";
 import { staggerContainer, statCardVariants, tapScale } from "../lib/motion";
@@ -95,6 +96,7 @@ export default function TraderDetail() {
           >
             Polymarket ↗
           </a>
+          <AddToListButton address={address!} />
         </div>
         {profile && profile.labels.length > 0 && (
           <div className="flex flex-wrap gap-2 mt-2">

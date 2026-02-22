@@ -342,3 +342,60 @@ export interface BidAsk {
   bestAsk: number | null;
   spread: number | null;
 }
+
+// Trader Lists
+
+export interface TraderList {
+  id: string;
+  name: string;
+  member_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TraderListMember {
+  address: string;
+  label?: string;
+  added_at: string;
+}
+
+export interface TraderListDetail {
+  id: string;
+  name: string;
+  members: TraderListMember[];
+  created_at: string;
+  updated_at: string;
+}
+
+// Signal Feed (WebSocket)
+
+export interface SignalTrade {
+  kind: "Trade";
+  tx_hash: string;
+  block_timestamp: string;
+  trader: string;
+  side: string;
+  asset_id: string;
+  amount: string;
+  price: string;
+  usdc_amount: string;
+  question?: string;
+  outcome?: string;
+}
+
+export interface ConvergenceAlert {
+  kind: "Convergence";
+  asset_id: string;
+  traders: string[];
+  side: string;
+  window_seconds: number;
+  question?: string;
+  outcome?: string;
+}
+
+export interface LagMessage {
+  kind: "Lag";
+  dropped: number;
+}
+
+export type SignalMessage = SignalTrade | ConvergenceAlert | LagMessage;
