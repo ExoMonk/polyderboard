@@ -10,3 +10,5 @@ frontend/package-lock.json
 deployments/polyderboard-prod
 tasks
 CLAUDE.md
+data/
+frontend/bun.lock

@@ -15,7 +15,7 @@ query: ## Run E2E leaderboard queries against the API
 	@./scripts/queries.sh
 
 frontend: ## Start frontend dev server on port 5173
-	cd frontend && npm run dev
+	cd frontend && bun run dev
 
 backfill: ## Backfill historical blocks: FROM=<block> [TO=<block>] make backfill
 	@./scripts/backfill.sh

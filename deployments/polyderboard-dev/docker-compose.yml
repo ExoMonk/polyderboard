@@ -73,12 +73,14 @@ services:
     depends_on:
       clickhouse:
         condition: service_healthy
+    env_file: ../../.env
     environment:
       CLICKHOUSE_URL: http://clickhouse:8123
       CLICKHOUSE_DB: poly_dearboard
       API_PORT: "3001"
       RINDEXER_WEBHOOK_SECRET: ${RINDEXER_WEBHOOK_SECRET:-dev-secret}
-      ACCESS_CODE: ${ACCESS_CODE:-}
+    volumes:
+      - ../../data:/app/data
     ports:
       - "3001:3001"
     healthcheck:
