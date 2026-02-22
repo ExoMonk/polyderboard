@@ -247,6 +247,29 @@ CREATE TABLE IF NOT EXISTS poly_dearboard.resolved_prices (
 ORDER BY (asset_id);
 
 -- =============================================================================
+-- 4b. Market metadata: persisted Gamma API data for query-time enrichment
+--
+--     Populated by the API server at startup (from warm_cache) and incrementally
+--     on each webhook ingestion for new tokens.
+--     ReplacingMergeTree deduplicates by asset_id; `updated_at` is the version.
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS poly_dearboard.market_metadata (
+    asset_id        String,
+    question        String,
+    outcome         String,
+    category        LowCardinality(String),
+    condition_id    String          DEFAULT '',
+    gamma_token_id  String          DEFAULT '',
+    outcome_index   UInt8           DEFAULT 0,
+    active          UInt8           DEFAULT 1,
+    all_token_ids   Array(String)   DEFAULT [],
+    outcomes        Array(String)   DEFAULT [],
+    updated_at      DateTime('UTC') DEFAULT now()
+) ENGINE = ReplacingMergeTree(updated_at)
+ORDER BY (asset_id);
+
+-- =============================================================================
 -- 5. Pre-aggregated tables + materialized views
 --
 --    These tables are fed by MVs from the trades table and persist permanently.
